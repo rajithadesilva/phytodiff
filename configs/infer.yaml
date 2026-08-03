@@ -1,0 +1,6 @@
+stage: infer
+model:
+  pipeline_checkpoint: outputs/joint/best.ckpt
+output:
+  dir: outputs/inference
+

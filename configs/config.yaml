@@ -1,0 +1,79 @@
+seed: 42
+
+paths:
+  output_root: outputs
+
+model:
+  encoder:
+    name: pointnext
+    pretrained: false
+    input_dim: 6
+    output_dim: 96
+    global_dim: 128
+    num_semantic_classes: 5
+    checkpoint: null
+  diffusion:
+    max_nodes: 512
+    hidden_dim: 128
+    layers: 3
+    heads: 4
+    local_neighbors: 16
+    train_timesteps: 1000
+    sample_steps: 50
+    scheduler: ddim
+    existence_threshold: 0.5
+    nms_distance_m: 0.006
+    min_nodes: 2
+    freeze_encoder: true
+    checkpoint: null
+  graph:
+    hidden_dim: 128
+    knn_candidates: 12
+    max_edge_length_m: 0.08
+    enforce_botanical_constraints: true
+    checkpoint: null
+  parametric:
+    hidden_dim: 96
+    leaf_mode: width_profile
+    fruit_mode: pseudo_optional
+    radial_segments: 8
+    curve_samples: 12
+    checkpoint: null
+
+fruit:
+  enabled: true
+  pseudo_labels_dir: ${data.processed_root}/fruit_pseudo
+  min_confidence: 0.70
+  loss_weight: 0.20
+  include_in_primary_metrics: false
+
+trainer:
+  devices: 1
+  max_epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  fast_dev_run: false
+  deterministic: true
+  num_workers: 0
+  batch_size: 1
+
+inference:
+  num_diffusion_samples: 1
+  seed: ${seed}
+  continuous_refinement_steps: 0
+
+input:
+  path: null
+
+output:
+  dir: outputs/inference
+
+export:
+  usd: true
+  meters_per_unit: 1.0
+  up_axis: Z
+  include_skeleton: true
+  include_collisions: false
+  include_context_pole: false
+  write_debug_usda: true
+

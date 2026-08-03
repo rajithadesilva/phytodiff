@@ -1,0 +1,9 @@
+export:
+  usd: true
+  meters_per_unit: 1.0
+  up_axis: Z
+  include_skeleton: true
+  include_collisions: false
+  include_context_pole: false
+  write_debug_usda: true
+

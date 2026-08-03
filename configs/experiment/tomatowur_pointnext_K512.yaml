@@ -1,0 +1,22 @@
+stage: joint
+experiment: tomatowur_pointnext_K512
+model:
+  encoder:
+    checkpoint: outputs/encoder/best.ckpt
+  diffusion:
+    checkpoint: outputs/diffusion/best.ckpt
+  graph:
+    checkpoint: outputs/graph/best.ckpt
+  parametric:
+    checkpoint: outputs/parametric/best.ckpt
+trainer:
+  learning_rate: 0.0001
+  geometry_points: 1024
+loss:
+  parametric_weight: 1.0
+  geometry_weight: 25.0
+  normal_weight: 0.1
+  skeleton_weight: 5.0
+  radius_weight: 0.01
+output:
+  dir: outputs/joint

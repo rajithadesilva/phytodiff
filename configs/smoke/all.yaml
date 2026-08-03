@@ -1,0 +1,33 @@
+stage: smoke
+seed: 7
+data:
+  processed_root: outputs/smoke/processed
+  max_nodes: 16
+  num_points: 64
+model:
+  encoder:
+    name: pointnext
+    output_dim: 32
+    global_dim: 48
+  diffusion:
+    max_nodes: 16
+    hidden_dim: 32
+    layers: 1
+    heads: 4
+    local_neighbors: 4
+    train_timesteps: 20
+    sample_steps: 4
+  graph:
+    hidden_dim: 32
+    knn_candidates: 4
+  parametric:
+    hidden_dim: 32
+    radial_segments: 6
+    curve_samples: 6
+trainer:
+  fast_dev_run: true
+  max_epochs: 1
+  batch_size: 1
+  geometry_points: 64
+output:
+  dir: outputs/smoke

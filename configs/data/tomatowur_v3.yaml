@@ -1,0 +1,16 @@
+dataset: TomatoWUR-v3
+raw_root: data/raw/TomatoWUR_v3
+processed_root: data/processed/v3_10mm_K512
+annotation_version: 0-paper-2Dto3D
+split: train
+split_file: null
+voxel_size_m: 0.001
+skeleton_spacing_m: 0.01
+max_nodes: 512
+num_points: 100000
+use_rgb: true
+use_normals: true
+remove_support_pole: true
+visibility_distance_m: 0.01
+strict: true
+

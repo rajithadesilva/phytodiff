@@ -1,0 +1,14 @@
+stage: diffusion
+model:
+  encoder:
+    checkpoint: outputs/encoder/best.ckpt
+  diffusion:
+    checkpoint: null
+loss:
+  existence_weight: 1.0
+  confidence_weight: 0.25
+  flow_weight: 0.25
+  duplicate_weight: 0.1
+  bounds_weight: 0.05
+output:
+  dir: outputs/diffusion

@@ -1,0 +1,35 @@
+stage: encoder
+model:
+  encoder:
+    name: sonata_ptv3
+    pretrained: true
+    tune_mode: linear_probe
+    checkpoint: null  # Set to an official compatible Sonata PTv3 checkpoint.
+    grid_size: 0.01
+    pointcept_config:
+      type: PT-v3m1
+      in_channels: 6
+      order: [z, z-trans, hilbert, hilbert-trans]
+      stride: [2, 2, 2, 2]
+      enc_depths: [2, 2, 2, 6, 2]
+      enc_channels: [32, 64, 128, 256, 512]
+      enc_num_head: [2, 4, 8, 16, 32]
+      enc_patch_size: [1024, 1024, 1024, 1024, 1024]
+      dec_depths: [2, 2, 2, 2]
+      dec_channels: [64, 64, 128, 256]
+      dec_num_head: [4, 4, 8, 16]
+      dec_patch_size: [1024, 1024, 1024, 1024]
+      mlp_ratio: 4
+      qkv_bias: true
+      attn_drop: 0.0
+      proj_drop: 0.0
+      drop_path: 0.3
+      shuffle_orders: true
+      pre_norm: true
+      enable_rpe: false
+      enable_flash: true
+      upcast_attention: false
+      upcast_softmax: false
+      cls_mode: false
+output:
+  dir: outputs/encoder_sonata_ptv3

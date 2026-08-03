@@ -1,0 +1,75 @@
+name: tomato-parametric-reconstruction
+
+x-project: &project
+  working_dir: /workspace
+  volumes:
+    - ../:/workspace
+    - ../data:/workspace/data
+    - ../outputs:/workspace/outputs
+    - pip-cache:/root/.cache/pip
+    - model-cache:/root/.cache/torch
+
+services:
+  train:
+    <<: *project
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: dev
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  preprocess:
+    <<: *project
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+
+  usd-export:
+    <<: *project
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: usd-export
+
+  fruit-pseudo:
+    <<: *project
+    profiles: [fruit-pseudo]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    command: ["python", "scripts/generate_fruit_pseudo_labels.py", "--output", "data/processed/v3_10mm_K512/fruit_pseudo"]
+
+  isaac-validate:
+    image: nvcr.io/nvidia/isaac-sim:6.0.1
+    profiles: [isaac-validate]
+    working_dir: /workspace
+    environment:
+      ACCEPT_EULA: Y
+      PRIVACY_CONSENT: Y
+      PYTHONPATH: /workspace/src
+    volumes:
+      - ../src:/workspace/src:ro
+      - ../outputs:/workspace/outputs
+    entrypoint: ["/isaac-sim/python.sh"]
+    command: ["-m", "tomato_recon.export.isaac_validate", "/workspace/outputs/inference/plant.usd", "--report", "/workspace/outputs/inference/isaac_validation.json"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  pip-cache:
+  model-cache:

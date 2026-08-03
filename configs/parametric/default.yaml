@@ -1,0 +1,10 @@
+stage: parametric
+data:
+  param_training_source: ground_truth_then_predicted
+model:
+  encoder:
+    checkpoint: outputs/encoder/best.ckpt
+  graph:
+    checkpoint: outputs/graph/best.ckpt
+output:
+  dir: outputs/parametric
