@@ -1,5 +1,5 @@
 stage: joint
-experiment: tomatowur_pointnext_K512
+experiment: tomatowur_pointnext_K256
 model:
   encoder:
     checkpoint: outputs/encoder/best.ckpt

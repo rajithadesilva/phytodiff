@@ -21,7 +21,7 @@ STAGE_CONFIGS = {
     "diffusion": "diffusion/default.yaml",
     "graph": "graph/default.yaml",
     "parametric": "parametric/default.yaml",
-    "joint": "experiment/tomatowur_pointnext_K512.yaml",
+    "joint": "experiment/tomatowur_pointnext_K256.yaml",
     "infer": "infer.yaml",
     "smoke": "smoke/all.yaml",
 }

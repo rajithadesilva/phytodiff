@@ -13,7 +13,7 @@ model:
     num_semantic_classes: 5
     checkpoint: null
   diffusion:
-    max_nodes: 512
+    max_nodes: 256
     hidden_dim: 128
     layers: 3
     heads: 4
@@ -76,4 +76,3 @@ export:
   include_collisions: false
   include_context_pole: false
   write_debug_usda: true
-

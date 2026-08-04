@@ -26,7 +26,7 @@ The stages are deliberately separate. Do not skip ahead, mix preprocessing hashe
 ## 4. Visualise three plants
 
 - Prerequisite: three processed plants.
-- Command: `python scripts/visualize_dataset.py data/processed/v3_10mm_K512 --count 3 --output outputs/dataset_preview`.
+- Command: `python scripts/visualize_dataset.py data/processed/v3_10mm_K256 --count 3 --output outputs/dataset_preview`.
 - Expected: three PNG projections with point clouds and graph edges.
 - Verify: visually inspect roots, labels, support-pole separation, tips, junctions, scale, and connectivity.
 
@@ -82,14 +82,14 @@ The stages are deliberately separate. Do not skip ahead, mix preprocessing hashe
 ## 12. Evaluate the frozen test set once
 
 - Prerequisite: frozen experiment configuration and complete test predictions.
-- Command: `python -m tomato_recon.evaluate --processed-root data/processed/v3_10mm_K512 --predictions outputs/inference --output outputs/evaluation/metrics.json`.
+- Command: `python -m tomato_recon.evaluate --processed-root data/processed/v3_10mm_K256 --predictions outputs/inference --output outputs/evaluation/metrics.json`.
 - Expected: per-sample/aggregate skeleton, topology, and trait results; geometry/fruit are in `secondary_aggregate`.
 - Verify: `primary_metric_groups` contains skeleton/topology/traits, geometry contains normal consistency when normals exist, and no test result was used for tuning.
 
 ## 13. Infer one sample and export
 
 - Prerequisite: joint checkpoint and processed NPZ or isolated CSV/ASCII PLY.
-- Command: `python -m tomato_recon.infer --config-name infer input.path=data/processed/v3_10mm_K512/samples/PLANT_ID.npz model.pipeline_checkpoint=outputs/joint/best.ckpt inference.num_diffusion_samples=4 output.dir=outputs/inference/PLANT_ID`.
+- Command: `python -m tomato_recon.infer --config-name infer input.path=data/processed/v3_10mm_K256/samples/PLANT_ID.npz model.pipeline_checkpoint=outputs/joint/best.ckpt inference.num_diffusion_samples=4 output.dir=outputs/inference/PLANT_ID`.
 - Expected: every file in the inference output contract, including graph, parameters, mesh, traits, uncertainty, preview, USD, and report.
 - Verify: open JSON/PLY outputs and check `export_report.json`; ground-truth node count is not read by sampling.
 

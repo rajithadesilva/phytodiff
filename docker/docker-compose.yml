@@ -47,7 +47,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: runtime
-    command: ["python", "scripts/generate_fruit_pseudo_labels.py", "--output", "data/processed/v3_10mm_K512/fruit_pseudo"]
+    command: ["python", "scripts/generate_fruit_pseudo_labels.py", "--output", "data/processed/v3_10mm_K256/fruit_pseudo"]
 
   isaac-validate:
     image: nvcr.io/nvidia/isaac-sim:6.0.1

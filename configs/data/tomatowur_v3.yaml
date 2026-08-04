@@ -1,6 +1,6 @@
 dataset: TomatoWUR-v3
 raw_root: data/raw/TomatoWUR_v3
-processed_root: data/processed/v3_10mm_K512
+processed_root: data/processed/v3_10mm_K256
 annotation_version: 0-paper-2Dto3D
 split: train
 split_file: null
@@ -13,4 +13,3 @@ use_normals: true
 remove_support_pole: true
 visibility_distance_m: 0.01
 strict: true
-

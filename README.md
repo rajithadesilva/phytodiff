@@ -67,7 +67,7 @@ Prerequisite: Step 2 and plant-level split JSONs.
 ```bash
 docker compose -f docker/docker-compose.yml run --rm preprocess \
   python scripts/prepare_tomatowur.py --config configs/data/tomatowur_v3.yaml
-python -c "import json; m=json.load(open('data/processed/v3_10mm_K512/manifest.json')); print(m['sample_count'], m['fixed_k_reduction_rate'], m['warnings'])"
+python -c "import json; m=json.load(open('data/processed/v3_10mm_K256/manifest.json')); print(m['sample_count'], m['fixed_k_reduction_rate'], m['warnings'])"
 ```
 
 Expected: `manifest.json` and versioned `.npz`, `.graph.json`, and `.params.json` sample caches. Verify that truncation is acceptable before tuning K on train/validation only.
@@ -77,7 +77,7 @@ Expected: `manifest.json` and versioned `.npz`, `.graph.json`, and `.params.json
 Prerequisite: at least three Stage 0 samples.
 
 ```bash
-python scripts/visualize_dataset.py data/processed/v3_10mm_K512 --count 3 --output outputs/dataset_preview
+python scripts/visualize_dataset.py data/processed/v3_10mm_K256 --count 3 --output outputs/dataset_preview
 test "$(find outputs/dataset_preview -name '*.png' | wc -l)" -ge 3
 ```
 
@@ -182,7 +182,7 @@ Expected: `outputs/joint/best.ckpt` containing the combined model and exact upst
 Prerequisite: a frozen experiment config and test predictions; do not tune on this output.
 
 ```bash
-python -m tomato_recon.evaluate --processed-root data/processed/v3_10mm_K512 \
+python -m tomato_recon.evaluate --processed-root data/processed/v3_10mm_K256 \
   --predictions outputs/inference --output outputs/evaluation/metrics.json
 python -c "import json; m=json.load(open('outputs/evaluation/metrics.json')); print(m['primary_metric_groups'], m['aggregate'])"
 ```
@@ -195,7 +195,7 @@ Prerequisite: Stage 5 checkpoint and a processed `.npz` (or isolated TomatoWUR-s
 
 ```bash
 python -m tomato_recon.infer --config-name infer \
-  input.path=data/processed/v3_10mm_K512/samples/PLANT_ID.npz \
+  input.path=data/processed/v3_10mm_K256/samples/PLANT_ID.npz \
   model.pipeline_checkpoint=outputs/joint/best.ckpt \
   inference.num_diffusion_samples=4 output.dir=outputs/inference/PLANT_ID
 test -f outputs/inference/PLANT_ID/plant_graph.json && test -f outputs/inference/PLANT_ID/plant.usd
