@@ -839,17 +839,35 @@ def preprocess_record(
 
 
 def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
-    reader = TomatoWURReader(
-        cfg.raw_root,
-        annotation_version=str(cfg.annotation_version),
-        split=str(cfg.split),
-        split_file=cfg.get("split_file"),
-    )
+    splits = [str(value) for value in cfg.get("splits", [str(cfg.split)])]
+    if not splits or len(splits) != len(set(splits)):
+        raise ValueError("data.splits must contain one or more unique split names")
+    if str(cfg.split) not in splits:
+        raise ValueError("data.split must be included in data.splits")
+    configured_split_files = cfg.get("split_files", {})
+    readers: dict[str, TomatoWURReader] = {}
+    for split in splits:
+        split_file = configured_split_files.get(split) if configured_split_files else None
+        if split_file is None and len(splits) == 1:
+            split_file = cfg.get("split_file")
+        readers[split] = TomatoWURReader(
+            cfg.raw_root,
+            annotation_version=str(cfg.annotation_version),
+            split=split,
+            split_file=split_file,
+        )
     output_root = Path(cfg.processed_root)
     samples_dir = output_root / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
     cfg_plain = OmegaConf.to_container(cfg, resolve=True)
-    preprocessing_hash = canonical_hash(cfg_plain)
+    if not isinstance(cfg_plain, dict):
+        raise TypeError("preprocessing configuration must be a mapping")
+    # Split orchestration does not alter a sample's preprocessing transforms.
+    # Excluding these new fields preserves the hash of the existing train cache.
+    hash_config = dict(cfg_plain)
+    hash_config.pop("splits", None)
+    hash_config.pop("split_files", None)
+    preprocessing_hash = canonical_hash(hash_config)
     manifest_samples = []
     warnings: list[str] = []
     reduced_count = 0
@@ -866,68 +884,83 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
     excluded_plant_ids: list[str] = []
     review_plant_ids: list[str] = []
     repaired_plant_ids: list[str] = []
-    for record in reader:
-        source_hashes = {
-            "point_cloud": sha256_file(record.point_cloud_path),
-            "labels": sha256_file(record.labels_path),
-            "skeleton": sha256_file(record.skeleton_path),
-        }
-        source = {
-            "dataset": "TomatoWUR-v3",
-            "preprocessing_hash": preprocessing_hash,
-            "checkpoint_hashes": {},
-            "source_hashes": source_hashes,
-        }
-        raw = reader.load_record(record)
-        sample, stats, support, quality = preprocess_record(raw, cfg, source)
-        quality_path = samples_dir / f"{record.plant_id}.quality.json"
-        quality_path.write_text(
-            json.dumps(quality, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        flagged = quality["status"] == "review"
-        if quality["status"] == "repaired":
-            repaired_plant_ids.append(record.plant_id)
-        if flagged:
-            review_plant_ids.append(record.plant_id)
-            warnings.append(
-                f"{record.plant_id}: {quality['suspicious_edge_count']} "
-                "suspicious raw skeleton edges"
-            )
-        if flagged and quality_action == "error":
-            raise ValueError(
-                f"{record.plant_id}: skeleton quality review required; see {quality_path}"
-            )
-        excluded = record.plant_id in explicit_exclusions or (
-            flagged and quality_action == "exclude_flagged"
-        )
-        if excluded:
-            excluded_plant_ids.append(record.plant_id)
-            continue
-        cache_name = f"{record.plant_id}.npz"
-        cache_path = samples_dir / cache_name
-        save_processed_sample(sample, cache_path)
-        (samples_dir / f"{record.plant_id}.graph.json").write_text(
-            json.dumps(sample.graph_target.to_dict(), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        (samples_dir / f"{record.plant_id}.params.json").write_text(
-            json.dumps(sample.param_target.to_dict(), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        if len(support):
-            np.savez_compressed(samples_dir / f"{record.plant_id}.context.npz", support_pole_xyz=support)
-        reduced_count += int(stats["fixed_k_reduced"])
-        manifest_samples.append(
-            {
-                "plant_id": record.plant_id,
-                "cache_file": cache_name,
-                "split": str(cfg.split),
-                "cache_sha256": sha256_file(cache_path),
-                "quality_file": quality_path.name,
-                "source_hashes": source_hashes,
-                **stats,
+    seen_plant_ids: set[str] = set()
+    split_counts = {split: 0 for split in splits}
+    for split, reader in readers.items():
+        for record in reader:
+            if record.plant_id in seen_plant_ids:
+                raise ValueError(
+                    f"plant ID {record.plant_id!r} occurs in more than one configured split"
+                )
+            seen_plant_ids.add(record.plant_id)
+            source_hashes = {
+                "point_cloud": sha256_file(record.point_cloud_path),
+                "labels": sha256_file(record.labels_path),
+                "skeleton": sha256_file(record.skeleton_path),
             }
-        )
+            source = {
+                "dataset": "TomatoWUR-v3",
+                "split": split,
+                "preprocessing_hash": preprocessing_hash,
+                "checkpoint_hashes": {},
+                "source_hashes": source_hashes,
+            }
+            raw = reader.load_record(record)
+            sample, stats, support, quality = preprocess_record(raw, cfg, source)
+            sample.metadata["split"] = split
+            quality["split"] = split
+            quality_path = samples_dir / f"{record.plant_id}.quality.json"
+            quality_path.write_text(
+                json.dumps(quality, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            flagged = quality["status"] == "review"
+            if quality["status"] == "repaired":
+                repaired_plant_ids.append(record.plant_id)
+            if flagged:
+                review_plant_ids.append(record.plant_id)
+                warnings.append(
+                    f"{record.plant_id}: {quality['suspicious_edge_count']} "
+                    "suspicious raw skeleton edges"
+                )
+            if flagged and quality_action == "error":
+                raise ValueError(
+                    f"{record.plant_id}: skeleton quality review required; see {quality_path}"
+                )
+            excluded = record.plant_id in explicit_exclusions or (
+                flagged and quality_action == "exclude_flagged"
+            )
+            if excluded:
+                excluded_plant_ids.append(record.plant_id)
+                continue
+            cache_name = f"{record.plant_id}.npz"
+            cache_path = samples_dir / cache_name
+            save_processed_sample(sample, cache_path)
+            (samples_dir / f"{record.plant_id}.graph.json").write_text(
+                json.dumps(sample.graph_target.to_dict(), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            (samples_dir / f"{record.plant_id}.params.json").write_text(
+                json.dumps(sample.param_target.to_dict(), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            if len(support):
+                np.savez_compressed(
+                    samples_dir / f"{record.plant_id}.context.npz",
+                    support_pole_xyz=support,
+                )
+            reduced_count += int(stats["fixed_k_reduced"])
+            split_counts[split] += 1
+            manifest_samples.append(
+                {
+                    "plant_id": record.plant_id,
+                    "cache_file": cache_name,
+                    "split": split,
+                    "cache_sha256": sha256_file(cache_path),
+                    "quality_file": quality_path.name,
+                    "source_hashes": source_hashes,
+                    **stats,
+                }
+            )
     count = len(manifest_samples)
     if count and reduced_count / count > 0.1:
         warnings.append(
@@ -937,7 +970,11 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
         "schema_version": "1.0",
         "dataset": "TomatoWUR-v3",
         "split": str(cfg.split),
-        "split_file": str(reader.split_file),
+        "splits": splits,
+        "split_file": str(readers[str(cfg.split)].split_file),
+        "split_files": {split: str(reader.split_file) for split, reader in readers.items()},
+        "split_counts": split_counts,
+        "source_split_counts": {split: len(reader) for split, reader in readers.items()},
         "preprocessing_config": cfg_plain,
         "preprocessing_hash": preprocessing_hash,
         "label_map": {
@@ -948,7 +985,7 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
             "4": "side_stem",
         },
         "sample_count": count,
-        "source_sample_count": len(reader),
+        "source_sample_count": sum(len(reader) for reader in readers.values()),
         "excluded_sample_count": len(excluded_plant_ids),
         "excluded_plant_ids": excluded_plant_ids,
         "skeleton_quality_review_count": len(review_plant_ids),

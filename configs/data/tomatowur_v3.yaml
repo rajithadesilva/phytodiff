@@ -3,6 +3,7 @@ raw_root: data/raw/TomatoWUR_v3
 processed_root: data/processed/v3_10mm_K256
 annotation_version: 0-paper-2Dto3D
 split: train
+splits: [train, val, test]
 split_file: null
 voxel_size_m: 0.001
 skeleton_spacing_m: 0.01

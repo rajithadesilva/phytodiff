@@ -26,6 +26,7 @@ def main() -> None:
             {
                 "manifest": str(Path(cfg.processed_root) / "manifest.json"),
                 "sample_count": manifest["sample_count"],
+                "split_counts": manifest["split_counts"],
                 "fixed_k_reduction_rate": manifest["fixed_k_reduction_rate"],
                 "warnings": manifest["warnings"],
             },
@@ -36,4 +37,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

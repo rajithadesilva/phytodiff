@@ -37,7 +37,22 @@ Every training stage reports epoch and batch progress, running component losses,
 - Prerequisite: verified caches and the chosen backbone dependency.
 - Command: `python -m tomato_recon.train.train_encoder --config-name encoder model.encoder.name=pointnext`.
 - Expected: `outputs/encoder/best.ckpt`, metrics, run metadata, and `smoke_predictions.pt`.
-- Verify: inspect semantic mIoU, skeleton precision/recall, centreline offset MAE, junction F1, and checkpoint stage/hash/K fields.
+- Verify: inspect semantic mIoU, skeleton precision/recall, centreline offset MAE, junction F1, and checkpoint stage/hash/K fields. The current trainer has no validation pass: it compares checkpoints using training loss and then saves the final epoch to `best.ckpt`. The summary metrics are calculated from the final training batch, so they are diagnostics rather than held-out validation results.
+
+Visualise predictions from the trained Stage 1 checkpoint:
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm train \
+  python scripts/visualize_encoder_predictions.py \
+  --checkpoint outputs/encoder/best.ckpt \
+  --processed-root data/processed/v3_10mm_K256 \
+  --split train --count 3 \
+  --output outputs/encoder/visualizations
+```
+
+Each plant PNG contains six front-view panels: input RGB, ground-truth semantics, predicted semantics, ground-truth skeleton, predicted skeleton probability with offset-corrected centreline points, and predicted junction probability. Cyan rings in the junction panel mark ground-truth junctions. The command also writes `metrics.json` for the selected plants. Use `--plant-id PLANT_ID` (repeatable) to select exact plants, `--count 0` for the entire selected split, or `--device cpu` to disable GPU inference.
+
+The default processed cache contains the 35 official training plants only. The raw TomatoWUR annotation files contain 35 train, 4 validation, and 5 test plants, but validation and test were not processed or used by this run. Generate separate processed caches for those official splits before treating any metric as held-out performance; do not use test results for checkpoint selection or tuning.
 
 ## 6. Cache encoder predictions
 
