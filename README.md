@@ -72,6 +72,8 @@ python -c "import json; m=json.load(open('data/processed/v3_10mm_K256/manifest.j
 
 Expected: `manifest.json` and versioned `.npz`, `.graph.json`, and `.params.json` sample caches. Verify that truncation is acceptable before tuning K on train/validation only.
 
+Stage 0 also writes one `.quality.json` per plant. The default removes suspect long/unsupported parent edges and reconnects their children to short, supported, cycle-safe parents. Inspect `skeleton_quality_repaired_count`, the per-edge repair records, and any remaining review IDs before training.
+
 ### 4. Visualise at least three processed plants
 
 Prerequisite: at least three Stage 0 samples.
@@ -81,7 +83,7 @@ python scripts/visualize_dataset.py data/processed/v3_10mm_K256 --count 3 --outp
 test "$(find outputs/dataset_preview -name '*.png' | wc -l)" -ge 3
 ```
 
-Expected: three root-centred point-cloud/skeleton previews. Inspect root position, support-pole removal, labels, junctions, and tips.
+Expected: three root-centred, three-view point-cloud/skeleton previews. Inspect root position, support-pole removal, labels, junctions, and tips. Red lines are processed edges, magenta lines are unresolved suspect edges, and cyan lines are replacement parents.
 
 ### 5. Train Stage 1: point encoder
 

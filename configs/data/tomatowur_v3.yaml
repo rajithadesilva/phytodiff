@@ -13,3 +13,13 @@ use_normals: true
 remove_support_pole: true
 visibility_distance_m: 0.01
 strict: true
+
+skeleton_quality:
+  enabled: true
+  max_edge_length_m: 0.08
+  sample_spacing_m: 0.005
+  support_distance_m: 0.015
+  min_support_ratio: 0.65
+  support_semantic_classes: [2, 4]
+  action: repair_flagged
+  exclude_plant_ids: []

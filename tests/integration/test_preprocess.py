@@ -52,8 +52,14 @@ class PreprocessingIntegrationTests(unittest.TestCase):
             self.assertEqual(sample.metadata["support_pole_point_count"], 5)
             self.assertTrue((processed / "samples/fixture_plant.graph.json").is_file())
             self.assertTrue((processed / "samples/fixture_plant.params.json").is_file())
+            self.assertTrue((processed / "samples/fixture_plant.quality.json").is_file())
             graph = json.loads((processed / "samples/fixture_plant.graph.json").read_text())
             self.assertEqual(graph["coordinate_frame"], {"meters_per_unit": 1.0, "up_axis": "Z"})
+            quality = json.loads(
+                (processed / "samples/fixture_plant.quality.json").read_text()
+            )
+            self.assertIn(quality["status"], {"pass", "review"})
+            self.assertEqual(quality["edge_count"], 4)
 
 
 if __name__ == "__main__":

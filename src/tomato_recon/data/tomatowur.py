@@ -277,6 +277,7 @@ class TomatoWURReader:
             "semantic": semantic,
             "instance": instance,
             "node_xyz": node_xyz,
+            "node_ids": np.asarray(original_ids, dtype=np.int64),
             "parent_index": parent,
             "edge_type": edge_type,
             "root_index": root,

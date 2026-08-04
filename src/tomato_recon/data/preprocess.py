@@ -64,6 +64,230 @@ def apply_inverse_normalisation(xyz: np.ndarray, normalised_to_original: np.ndar
     return (xyz_h @ normalised_to_original.T)[:, :3]
 
 
+def evaluate_skeleton_quality(
+    node_xyz: np.ndarray,
+    parent_index: np.ndarray,
+    edge_type: np.ndarray,
+    point_xyz: np.ndarray,
+    semantic: np.ndarray,
+    *,
+    node_ids: np.ndarray | None = None,
+    max_edge_length_m: float = 0.08,
+    sample_spacing_m: float = 0.005,
+    support_distance_m: float = 0.015,
+    min_support_ratio: float = 0.65,
+    support_semantic_classes: tuple[int, ...] = (2, 4),
+) -> dict[str, Any]:
+    """Score raw skeleton edges without mutating their annotated topology.
+
+    An edge is suspicious only when it exceeds the configured length and less
+    than the configured fraction of samples lie near stem-labelled scan points.
+    This keeps long but well-supported petioles while exposing unsupported
+    inter-organ shortcuts for review.
+    """
+    if max_edge_length_m <= 0 or sample_spacing_m <= 0 or support_distance_m <= 0:
+        raise ValueError("skeleton quality distances must be positive")
+    if not 0 <= min_support_ratio <= 1:
+        raise ValueError("skeleton quality min_support_ratio must be in [0,1]")
+    node_ids = (
+        np.arange(len(node_xyz), dtype=np.int64)
+        if node_ids is None
+        else np.asarray(node_ids, dtype=np.int64)
+    )
+    support_mask = np.isin(semantic, np.asarray(support_semantic_classes, dtype=np.int64))
+    support_points = point_xyz[support_mask]
+    tree = None
+    if len(support_points):
+        from scipy.spatial import cKDTree
+
+        tree = cKDTree(support_points)
+
+    edges: list[dict[str, Any]] = []
+    for child_index, raw_parent in enumerate(parent_index):
+        parent_index_value = int(raw_parent)
+        if parent_index_value < 0:
+            continue
+        start = node_xyz[parent_index_value]
+        end = node_xyz[child_index]
+        length_m = float(np.linalg.norm(end - start))
+        sample_count = max(3, int(math.ceil(length_m / sample_spacing_m)) + 1)
+        alpha = np.linspace(0.0, 1.0, sample_count, dtype=np.float32)[:, None]
+        query = start[None] * (1.0 - alpha) + end[None] * alpha
+        if tree is None:
+            distances = np.full(sample_count, np.inf, dtype=np.float64)
+        else:
+            distances = np.asarray(tree.query(query, k=1, workers=1)[0])
+        support_ratio = float(np.mean(distances <= support_distance_m))
+        support_distance_p90_m = (
+            float(np.quantile(distances, 0.9)) if np.isfinite(distances).any() else None
+        )
+        length_flag = length_m > max_edge_length_m
+        support_flag = support_ratio < min_support_ratio
+        suspicious = length_flag and support_flag
+        edges.append(
+            {
+                "parent_index": parent_index_value,
+                "child_index": child_index,
+                "parent_id": int(node_ids[parent_index_value]),
+                "child_id": int(node_ids[child_index]),
+                "edge_type": str(edge_type[child_index]),
+                "start_xyz": start.tolist(),
+                "end_xyz": end.tolist(),
+                "length_m": length_m,
+                "sample_count": sample_count,
+                "support_ratio": support_ratio,
+                "support_distance_p90_m": support_distance_p90_m,
+                "length_flag": length_flag,
+                "support_flag": support_flag,
+                "suspicious": suspicious,
+            }
+        )
+    suspicious_edges = [edge for edge in edges if edge["suspicious"]]
+    return {
+        "schema_version": "1.0",
+        "status": "review" if suspicious_edges else "pass",
+        "thresholds": {
+            "max_edge_length_m": max_edge_length_m,
+            "sample_spacing_m": sample_spacing_m,
+            "support_distance_m": support_distance_m,
+            "min_support_ratio": min_support_ratio,
+            "support_semantic_classes": list(support_semantic_classes),
+        },
+        "edge_count": len(edges),
+        "long_edge_count": sum(bool(edge["length_flag"]) for edge in edges),
+        "low_support_edge_count": sum(bool(edge["support_flag"]) for edge in edges),
+        "suspicious_edge_count": len(suspicious_edges),
+        "max_edge_length_m": max((float(edge["length_m"]) for edge in edges), default=0.0),
+        "edges": edges,
+    }
+
+
+def repair_suspicious_skeleton_edges(
+    node_xyz: np.ndarray,
+    parent_index: np.ndarray,
+    edge_type: np.ndarray,
+    point_xyz: np.ndarray,
+    semantic: np.ndarray,
+    quality: dict[str, Any],
+    *,
+    node_ids: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]]]:
+    """Replace flagged parents with short, supported, cycle-safe connections."""
+    thresholds = quality["thresholds"]
+    max_length = float(thresholds["max_edge_length_m"])
+    spacing = float(thresholds["sample_spacing_m"])
+    support_distance = float(thresholds["support_distance_m"])
+    min_support = float(thresholds["min_support_ratio"])
+    support_classes = tuple(int(value) for value in thresholds["support_semantic_classes"])
+    repaired_parent = np.asarray(parent_index, dtype=np.int64).copy()
+    repaired_edge_type = np.asarray(edge_type, dtype=object).copy()
+    node_ids = (
+        np.arange(len(node_xyz), dtype=np.int64)
+        if node_ids is None
+        else np.asarray(node_ids, dtype=np.int64)
+    )
+    support_points = point_xyz[np.isin(semantic, np.asarray(support_classes))]
+    tree = None
+    if len(support_points):
+        from scipy.spatial import cKDTree
+
+        tree = cKDTree(support_points)
+
+    def descendants(index: int) -> set[int]:
+        children = [[] for _ in range(len(repaired_parent))]
+        for child, parent in enumerate(repaired_parent):
+            if parent >= 0:
+                children[int(parent)].append(child)
+        found = {index}
+        stack = [index]
+        while stack:
+            current = stack.pop()
+            for child in children[current]:
+                if child not in found:
+                    found.add(child)
+                    stack.append(child)
+        return found
+
+    def score_edge(parent: int, child: int) -> tuple[float, float]:
+        start, end = node_xyz[parent], node_xyz[child]
+        length = float(np.linalg.norm(end - start))
+        count = max(3, int(math.ceil(length / spacing)) + 1)
+        alpha = np.linspace(0.0, 1.0, count, dtype=np.float32)[:, None]
+        query = start[None] * (1.0 - alpha) + end[None] * alpha
+        if tree is None:
+            return length, 0.0
+        distances = np.asarray(tree.query(query, k=1, workers=1)[0])
+        return length, float(np.mean(distances <= support_distance))
+
+    repairs: list[dict[str, Any]] = []
+    suspicious = sorted(
+        (edge for edge in quality["edges"] if edge["suspicious"]),
+        key=lambda edge: (-float(edge["length_m"]), int(edge["child_index"])),
+    )
+    for original in suspicious:
+        child = int(original["child_index"])
+        old_parent = int(repaired_parent[child])
+        forbidden = descendants(child)
+        candidates: list[tuple[int, float, float]] = []
+        for candidate in range(len(node_xyz)):
+            if candidate in forbidden or candidate == old_parent:
+                continue
+            length, support_ratio = score_edge(candidate, child)
+            if length >= float(original["length_m"]):
+                continue
+            candidates.append((candidate, length, support_ratio))
+        if not candidates:
+            raise ValueError(
+                f"cannot repair suspicious edge {node_ids[old_parent]}->{node_ids[child]}: "
+                "no shorter cycle-safe parent exists"
+            )
+        preferred = [
+            value for value in candidates if value[1] <= max_length and value[2] >= min_support
+        ]
+        if preferred:
+            new_parent, new_length, new_support = min(
+                preferred, key=lambda value: (value[1], -value[2], value[0])
+            )
+        else:
+            short = [value for value in candidates if value[1] <= max_length]
+            if short:
+                new_parent, new_length, new_support = min(
+                    short, key=lambda value: (-value[2], value[1], value[0])
+                )
+            else:
+                supported = [value for value in candidates if value[2] >= min_support]
+                if not supported:
+                    raise ValueError(
+                        f"cannot repair suspicious edge {node_ids[old_parent]}->{node_ids[child]}: "
+                        "no supported replacement parent exists"
+                    )
+                new_parent, new_length, new_support = min(
+                    supported, key=lambda value: (value[1], -value[2], value[0])
+                )
+        repaired_parent[child] = new_parent
+        repaired_edge_type[child] = "+"
+        _tree_children(repaired_parent)
+        repairs.append(
+            {
+                "child_index": child,
+                "child_id": int(node_ids[child]),
+                "old_parent_index": old_parent,
+                "old_parent_id": int(node_ids[old_parent]),
+                "new_parent_index": int(new_parent),
+                "new_parent_id": int(node_ids[new_parent]),
+                "old_start_xyz": node_xyz[old_parent].tolist(),
+                "new_start_xyz": node_xyz[new_parent].tolist(),
+                "end_xyz": node_xyz[child].tolist(),
+                "old_length_m": float(original["length_m"]),
+                "new_length_m": float(new_length),
+                "new_support_ratio": float(new_support),
+                "new_edge_type": "+",
+            }
+        )
+    _tree_children(repaired_parent)
+    return repaired_parent, repaired_edge_type, repairs
+
+
 def voxel_downsample(
     xyz: np.ndarray,
     voxel_size_m: float,
@@ -442,7 +666,9 @@ def fit_parametric_targets(
     return ParametricPlant(plant_id=graph.plant_id, organs=organs)
 
 
-def preprocess_record(raw: dict[str, Any], cfg: DictConfig, source: dict[str, Any]) -> tuple[PlantSample, dict[str, Any], np.ndarray]:
+def preprocess_record(
+    raw: dict[str, Any], cfg: DictConfig, source: dict[str, Any]
+) -> tuple[PlantSample, dict[str, Any], np.ndarray, dict[str, Any]]:
     xyz = raw["xyz"]
     if len(xyz) == 0 or not np.isfinite(xyz).all():
         raise ValueError(f"{raw['plant_id']}: XYZ must be non-empty and finite")
@@ -467,8 +693,79 @@ def preprocess_record(raw: dict[str, Any], cfg: DictConfig, source: dict[str, An
             value[selection] for value in (xyz, rgb, normals, semantic, instance)
         )
         original_indices = original_indices[selection]
+    quality_cfg = cfg.get("skeleton_quality", {})
+    quality_enabled = bool(quality_cfg.get("enabled", True))
+    working_parent = np.asarray(raw["parent_index"], dtype=np.int64).copy()
+    working_edge_type = np.asarray(raw["edge_type"], dtype=object).copy()
+    if quality_enabled:
+        quality = evaluate_skeleton_quality(
+            skeleton,
+            working_parent,
+            working_edge_type,
+            xyz,
+            semantic,
+            node_ids=raw.get("node_ids"),
+            max_edge_length_m=float(quality_cfg.get("max_edge_length_m", 0.08)),
+            sample_spacing_m=float(quality_cfg.get("sample_spacing_m", 0.005)),
+            support_distance_m=float(quality_cfg.get("support_distance_m", 0.015)),
+            min_support_ratio=float(quality_cfg.get("min_support_ratio", 0.65)),
+            support_semantic_classes=tuple(
+                int(value) for value in quality_cfg.get("support_semantic_classes", [2, 4])
+            ),
+        )
+        if quality["status"] == "review" and str(
+            quality_cfg.get("action", "report")
+        ) == "repair_flagged":
+            original_quality = quality
+            working_parent, working_edge_type, repairs = repair_suspicious_skeleton_edges(
+                skeleton,
+                working_parent,
+                working_edge_type,
+                xyz,
+                semantic,
+                original_quality,
+                node_ids=raw.get("node_ids"),
+            )
+            quality = evaluate_skeleton_quality(
+                skeleton,
+                working_parent,
+                working_edge_type,
+                xyz,
+                semantic,
+                node_ids=raw.get("node_ids"),
+                max_edge_length_m=float(quality_cfg.get("max_edge_length_m", 0.08)),
+                sample_spacing_m=float(quality_cfg.get("sample_spacing_m", 0.005)),
+                support_distance_m=float(quality_cfg.get("support_distance_m", 0.015)),
+                min_support_ratio=float(quality_cfg.get("min_support_ratio", 0.65)),
+                support_semantic_classes=tuple(
+                    int(value)
+                    for value in quality_cfg.get("support_semantic_classes", [2, 4])
+                ),
+            )
+            quality["original_status"] = original_quality["status"]
+            quality["original_suspicious_edge_count"] = original_quality[
+                "suspicious_edge_count"
+            ]
+            quality["removed_edges"] = [
+                edge for edge in original_quality["edges"] if edge["suspicious"]
+            ]
+            quality["repairs"] = repairs
+            if quality["suspicious_edge_count"] == 0:
+                quality["status"] = "repaired"
+    else:
+        quality = {
+            "schema_version": "1.0",
+            "status": "disabled",
+            "edge_count": max(len(skeleton) - 1, 0),
+            "long_edge_count": 0,
+            "low_support_edge_count": 0,
+            "suspicious_edge_count": 0,
+            "max_edge_length_m": 0.0,
+            "edges": [],
+        }
+    quality["plant_id"] = raw["plant_id"]
     resampled_xyz, resampled_parent, resampled_edge_type = resample_skeleton_tree(
-        skeleton, raw["parent_index"], raw["edge_type"], float(cfg.skeleton_spacing_m)
+        skeleton, working_parent, working_edge_type, float(cfg.skeleton_spacing_m)
     )
     pre_reduction_count = len(resampled_xyz)
     node_xyz, parent, _, valid, reduced = fixed_k_skeleton(
@@ -491,6 +788,12 @@ def preprocess_record(raw: dict[str, Any], cfg: DictConfig, source: dict[str, An
         "source_hashes": source["source_hashes"],
         "point_to_original_index": original_indices.tolist(),
         "support_pole_point_count": int(len(support)),
+        "skeleton_quality_status": quality["status"],
+        "suspicious_raw_edge_count": quality.get(
+            "original_suspicious_edge_count", quality["suspicious_edge_count"]
+        ),
+        "remaining_suspicious_raw_edge_count": quality["suspicious_edge_count"],
+        "repaired_raw_edge_count": len(quality.get("repairs", [])),
         "traits": {name: values.tolist() for name, values in raw["traits"].items()},
     }
     graph = graph_from_targets(
@@ -524,8 +827,15 @@ def preprocess_record(raw: dict[str, Any], cfg: DictConfig, source: dict[str, An
         "cached_skeleton_nodes": int(valid.sum()),
         "fixed_k_reduced": reduced,
         "support_pole_points": len(support),
+        "skeleton_quality_status": quality["status"],
+        "suspicious_raw_edge_count": quality.get(
+            "original_suspicious_edge_count", quality["suspicious_edge_count"]
+        ),
+        "remaining_suspicious_raw_edge_count": quality["suspicious_edge_count"],
+        "repaired_raw_edge_count": len(quality.get("repairs", [])),
+        "max_raw_edge_length_m": quality["max_edge_length_m"],
     }
-    return sample, stats, support
+    return sample, stats, support, quality
 
 
 def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
@@ -543,6 +853,19 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
     manifest_samples = []
     warnings: list[str] = []
     reduced_count = 0
+    quality_cfg = cfg.get("skeleton_quality", {})
+    quality_action = str(quality_cfg.get("action", "report"))
+    if quality_action not in {"report", "error", "exclude_flagged", "repair_flagged"}:
+        raise ValueError(
+            "skeleton_quality.action must be report, error, exclude_flagged, "
+            "or repair_flagged"
+        )
+    explicit_exclusions = {
+        str(value) for value in quality_cfg.get("exclude_plant_ids", [])
+    }
+    excluded_plant_ids: list[str] = []
+    review_plant_ids: list[str] = []
+    repaired_plant_ids: list[str] = []
     for record in reader:
         source_hashes = {
             "point_cloud": sha256_file(record.point_cloud_path),
@@ -556,7 +879,30 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
             "source_hashes": source_hashes,
         }
         raw = reader.load_record(record)
-        sample, stats, support = preprocess_record(raw, cfg, source)
+        sample, stats, support, quality = preprocess_record(raw, cfg, source)
+        quality_path = samples_dir / f"{record.plant_id}.quality.json"
+        quality_path.write_text(
+            json.dumps(quality, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        flagged = quality["status"] == "review"
+        if quality["status"] == "repaired":
+            repaired_plant_ids.append(record.plant_id)
+        if flagged:
+            review_plant_ids.append(record.plant_id)
+            warnings.append(
+                f"{record.plant_id}: {quality['suspicious_edge_count']} "
+                "suspicious raw skeleton edges"
+            )
+        if flagged and quality_action == "error":
+            raise ValueError(
+                f"{record.plant_id}: skeleton quality review required; see {quality_path}"
+            )
+        excluded = record.plant_id in explicit_exclusions or (
+            flagged and quality_action == "exclude_flagged"
+        )
+        if excluded:
+            excluded_plant_ids.append(record.plant_id)
+            continue
         cache_name = f"{record.plant_id}.npz"
         cache_path = samples_dir / cache_name
         save_processed_sample(sample, cache_path)
@@ -577,6 +923,7 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
                 "cache_file": cache_name,
                 "split": str(cfg.split),
                 "cache_sha256": sha256_file(cache_path),
+                "quality_file": quality_path.name,
                 "source_hashes": source_hashes,
                 **stats,
             }
@@ -601,6 +948,13 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
             "4": "side_stem",
         },
         "sample_count": count,
+        "source_sample_count": len(reader),
+        "excluded_sample_count": len(excluded_plant_ids),
+        "excluded_plant_ids": excluded_plant_ids,
+        "skeleton_quality_review_count": len(review_plant_ids),
+        "skeleton_quality_review_plant_ids": review_plant_ids,
+        "skeleton_quality_repaired_count": len(repaired_plant_ids),
+        "skeleton_quality_repaired_plant_ids": repaired_plant_ids,
         "fixed_k_reduction_count": reduced_count,
         "fixed_k_reduction_rate": reduced_count / max(count, 1),
         "warnings": warnings,

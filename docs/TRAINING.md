@@ -21,14 +21,14 @@ The stages are deliberately separate. Do not skip ahead, mix preprocessing hashe
 - Prerequisite: Step 2 and plant-level splits.
 - Command: `docker compose -f docker/docker-compose.yml run --rm preprocess python scripts/prepare_tomatowur.py --config configs/data/tomatowur_v3.yaml`.
 - Expected: deterministic NPZ/graph/parameter caches and `manifest.json`.
-- Verify: inspect `sample_count`, `fixed_k_reduction_rate`, source hashes, warnings, and label map in the manifest.
+- Verify: inspect `sample_count`, `fixed_k_reduction_rate`, source hashes, warnings, label map, `skeleton_quality_review_count`, and `skeleton_quality_review_plant_ids` in the manifest. Review each per-plant `.quality.json` before selecting exclusions.
 
 ## 4. Visualise three plants
 
 - Prerequisite: three processed plants.
 - Command: `python scripts/visualize_dataset.py data/processed/v3_10mm_K256 --count 3 --output outputs/dataset_preview`.
-- Expected: three PNG projections with point clouds and graph edges.
-- Verify: visually inspect roots, labels, support-pole separation, tips, junctions, scale, and connectivity.
+- Expected: three PNG previews, each with X-Z, Y-Z, and X-Y projections. Processed edges are red, unresolved suspicious edges are magenta, and replacement parents are cyan.
+- Verify: visually inspect roots, labels, support-pole separation, tips, junctions, scale, connectivity, every magenta edge, and every cyan `parent_id→child_id` repair.
 
 ## 5. Train Stage 1 encoder
 

@@ -17,6 +17,14 @@ Point CSV fields are metric `x,y,z`, byte-range `blue,green,red`, and `nx,ny,nz`
 
 Raw semantic value 255 denotes an unlabeled point and is converted to the internal ignore index (-100). Such points remain available to geometry-based auxiliary targets but are excluded from semantic cross-entropy.
 
+## Skeleton quality control
+
+Stage 0 evaluates every raw parent edge before resampling or fixed-K reduction. It samples the edge in 3D and measures support from semantic main-stem and side-stem points. An edge is marked suspicious only when it is both longer than `skeleton_quality.max_edge_length_m` and has a support ratio below `skeleton_quality.min_support_ratio`.
+
+Each source plant receives `samples/<plant_id>.quality.json`. The default `skeleton_quality.action=repair_flagged` removes every suspect parent edge and reconnects its child to the best short, supported candidate outside the child's subtree. This preserves one root, connectivity and acyclicity while retaining the plant. Raw annotations are never edited; reports retain the removed edge and replacement IDs, coordinates, lengths and support. Set `action=report` for diagnosis only, `action=error` to stop at the first suspect plant, or `action=exclude_flagged` to omit flagged plants. Explicit IDs in `skeleton_quality.exclude_plant_ids` are always excluded.
+
+`scripts/visualize_dataset.py` renders X-Z, Y-Z, and X-Y views. Processed edges are red, unresolved suspicious edges are magenta, and repaired replacement edges are cyan. Highlighted edges are labelled with `parent_id→child_id`.
+
 Split JSON entries must resolve point-cloud, label, and skeleton paths. Official key names `file_name`, `sem_seg_file_name`, and `skeleton_file_name` are supported, as are explicit aliases. Alternate files/views of one plant must stay in one plant-level split.
 
 ## Deterministic conversion
