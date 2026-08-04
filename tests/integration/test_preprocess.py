@@ -61,6 +61,50 @@ class PreprocessingIntegrationTests(unittest.TestCase):
             self.assertIn(quality["status"], {"pass", "review"})
             self.assertEqual(quality["edge_count"], 4)
 
+    def test_combines_official_splits_without_cross_split_leakage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "raw"
+            train_path = create_tomatowur_fixture(root)
+            train_entry = json.loads(train_path.read_text(encoding="utf-8"))[0]
+            split_dir = train_path.parent
+            for split, plant_id in (("val", "fixture_val"), ("test", "fixture_test")):
+                entry = dict(train_entry)
+                entry["plant_id"] = plant_id
+                (split_dir / f"{split}.json").write_text(
+                    json.dumps([entry]), encoding="utf-8"
+                )
+
+            processed = Path(directory) / "processed"
+            cfg = OmegaConf.create(
+                {
+                    "raw_root": str(root),
+                    "processed_root": str(processed),
+                    "annotation_version": "0-paper-2Dto3D",
+                    "split": "train",
+                    "splits": ["train", "val", "test"],
+                    "split_file": None,
+                    "voxel_size_m": 0.001,
+                    "skeleton_spacing_m": 0.02,
+                    "max_nodes": 16,
+                    "num_points": 100,
+                    "use_rgb": True,
+                    "use_normals": True,
+                    "remove_support_pole": True,
+                    "visibility_distance_m": 0.01,
+                    "strict": True,
+                }
+            )
+            manifest = preprocess_dataset(cfg)
+
+            self.assertEqual(manifest["sample_count"], 3)
+            self.assertEqual(manifest["split_counts"], {"train": 1, "val": 1, "test": 1})
+            self.assertEqual(len(ProcessedTomatoDataset(processed, split="train")), 1)
+            self.assertEqual(len(ProcessedTomatoDataset(processed, split="val")), 1)
+            test_dataset = ProcessedTomatoDataset(processed, split="test")
+            self.assertEqual(len(test_dataset), 1)
+            self.assertEqual(test_dataset[0].plant_id, "fixture_test")
+            self.assertEqual(test_dataset[0].metadata["split"], "test")
+
 
 if __name__ == "__main__":
     unittest.main()

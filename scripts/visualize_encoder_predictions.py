@@ -382,13 +382,17 @@ def main() -> None:
         type=Path,
         help="Processed cache root; defaults to data.processed_root stored in the checkpoint",
     )
-    parser.add_argument("--split", default=None, help="Defaults to data.split in the checkpoint")
+    parser.add_argument(
+        "--split",
+        default="test",
+        help="Held-out split to visualize (default: test)",
+    )
     parser.add_argument("--count", type=int, default=3, help="Number of plants; use 0 for all")
     parser.add_argument(
         "--plant-id", action="append", default=[], help="Render this plant ID (repeatable)"
     )
     parser.add_argument(
-        "--output", type=Path, default=Path("outputs/encoder/visualizations")
+        "--output", type=Path, default=Path("outputs/encoder/test_visualizations")
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--probability-threshold", type=float, default=0.5)
@@ -408,7 +412,7 @@ def main() -> None:
         )
     cfg = OmegaConf.create(raw_checkpoint["config"])
     processed_root = args.processed_root or Path(str(cfg.data.processed_root))
-    split = args.split or str(cfg.data.split)
+    split = str(args.split)
     dataset = ProcessedTomatoDataset(processed_root, split=split)
     if not len(dataset):
         raise ValueError(f"processed split {split!r} contains no samples at {processed_root}")

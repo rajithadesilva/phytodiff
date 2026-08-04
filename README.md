@@ -67,10 +67,10 @@ Prerequisite: Step 2 and plant-level split JSONs.
 ```bash
 docker compose -f docker/docker-compose.yml run --rm preprocess \
   python scripts/prepare_tomatowur.py --config configs/data/tomatowur_v3.yaml
-python -c "import json; m=json.load(open('data/processed/v3_10mm_K256/manifest.json')); print(m['sample_count'], m['fixed_k_reduction_rate'], m['warnings'])"
+python -c "import json; m=json.load(open('data/processed/v3_10mm_K256/manifest.json')); print(m['sample_count'], m['split_counts'], m['fixed_k_reduction_rate'], m['warnings'])"
 ```
 
-Expected: `manifest.json` and versioned `.npz`, `.graph.json`, and `.params.json` sample caches. Verify that truncation is acceptable before tuning K on train/validation only.
+Expected: `manifest.json` and versioned `.npz`, `.graph.json`, and `.params.json` caches for all 44 plants. Verify the official plant-level counts are 35 train, 4 validation, and 5 test, and that truncation is acceptable before tuning K on train/validation only.
 
 Stage 0 also writes one `.quality.json` per plant. The default removes suspect long/unsupported parent edges and reconnects their children to short, supported, cycle-safe parents. Inspect `skeleton_quality_repaired_count`, the per-edge repair records, and any remaining review IDs before training.
 
@@ -95,7 +95,15 @@ docker compose -f docker/docker-compose.yml run --rm train \
 python -c "import torch; c=torch.load('outputs/encoder/best.ckpt', map_location='cpu', weights_only=False); print(c['stage'], c['metrics'])"
 ```
 
-Expected: `outputs/encoder/best.ckpt`, resolved config, environment/git state, metrics, and a cached smoke prediction. Verify semantic mIoU, skeleton precision/recall, centreline offset MAE, and junction F1.
+Expected: `outputs/encoder/best.ckpt`, `outputs/encoder/last.ckpt`, resolved config, environment/git state, metrics, and a cached validation prediction. Every epoch trains only on the 35 training plants and evaluates all 4 validation plants without gradients. `best.ckpt` is selected by validation loss; test plants are never loaded by training.
+
+After model selection is frozen, render all five test plants once:
+
+```bash
+make visualize-stage1-test
+```
+
+Expected: six-panel prediction/target previews and test metrics in `outputs/encoder/test_visualizations`. Do not use these test results to tune training settings or thresholds.
 
 ### 6. Cache encoder features or predictions
 

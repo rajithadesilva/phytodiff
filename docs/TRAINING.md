@@ -22,8 +22,8 @@ Every training stage reports epoch and batch progress, running component losses,
 
 - Prerequisite: Step 2 and plant-level splits.
 - Command: `docker compose -f docker/docker-compose.yml run --rm preprocess python scripts/prepare_tomatowur.py --config configs/data/tomatowur_v3.yaml`.
-- Expected: deterministic NPZ/graph/parameter caches and `manifest.json`.
-- Verify: inspect `sample_count`, `fixed_k_reduction_rate`, source hashes, warnings, label map, `skeleton_quality_review_count`, and `skeleton_quality_review_plant_ids` in the manifest. Review each per-plant `.quality.json` before selecting exclusions.
+- Expected: deterministic NPZ/graph/parameter caches and one `manifest.json` containing the official train, validation, and test partitions.
+- Verify: `split_counts` is `train: 35`, `val: 4`, `test: 5`. Also inspect `fixed_k_reduction_rate`, source hashes, warnings, label map, `skeleton_quality_review_count`, and `skeleton_quality_review_plant_ids` in the manifest. Review each per-plant `.quality.json` before selecting exclusions.
 
 ## 4. Visualise three plants
 
@@ -36,8 +36,8 @@ Every training stage reports epoch and batch progress, running component losses,
 
 - Prerequisite: verified caches and the chosen backbone dependency.
 - Command: `python -m tomato_recon.train.train_encoder --config-name encoder model.encoder.name=pointnext`.
-- Expected: `outputs/encoder/best.ckpt`, metrics, run metadata, and `smoke_predictions.pt`.
-- Verify: inspect semantic mIoU, skeleton precision/recall, centreline offset MAE, junction F1, and checkpoint stage/hash/K fields. The current trainer has no validation pass: it compares checkpoints using training loss and then saves the final epoch to `best.ckpt`. The summary metrics are calculated from the final training batch, so they are diagnostics rather than held-out validation results.
+- Expected: `outputs/encoder/best.ckpt`, `last.ckpt`, metrics, run metadata, and `smoke_predictions.pt`. Training uses only the 35 `train` plants. After every epoch, all 4 `val` plants are evaluated without gradients; `best.ckpt` is selected by `val_loss`, while `last.ckpt` supports resuming the latest epoch.
+- Verify: inspect `val_semantic_miou`, validation skeleton precision/recall, centreline offset MAE, junction F1, and checkpoint stage/hash/K fields. The test split is not loaded during training or checkpoint selection.
 
 Visualise predictions from the trained Stage 1 checkpoint:
 
@@ -46,13 +46,13 @@ docker compose -f docker/docker-compose.yml run --rm train \
   python scripts/visualize_encoder_predictions.py \
   --checkpoint outputs/encoder/best.ckpt \
   --processed-root data/processed/v3_10mm_K256 \
-  --split train --count 3 \
-  --output outputs/encoder/visualizations
+  --split test --count 3 \
+  --output outputs/encoder/test_visualizations
 ```
 
-Each plant PNG contains six front-view panels: input RGB, ground-truth semantics, predicted semantics, ground-truth skeleton, predicted skeleton probability with offset-corrected centreline points, and predicted junction probability. Cyan rings in the junction panel mark ground-truth junctions. The command also writes `metrics.json` for the selected plants. Use `--plant-id PLANT_ID` (repeatable) to select exact plants, `--count 0` for the entire selected split, or `--device cpu` to disable GPU inference.
+Each plant PNG contains six front-view panels: input RGB, ground-truth semantics, predicted semantics, ground-truth skeleton, predicted skeleton probability with offset-corrected centreline points, and predicted junction probability. Cyan rings in the junction panel mark ground-truth junctions. The command defaults to `test` and writes `metrics.json` for the selected plants. Use `--plant-id PLANT_ID` (repeatable) to select exact plants, `--count 0` for all 5 test plants, or `--device cpu` to disable GPU inference. Run this only after model selection is complete.
 
-The default processed cache contains the 35 official training plants only. The raw TomatoWUR annotation files contain 35 train, 4 validation, and 5 test plants, but validation and test were not processed or used by this run. Generate separate processed caches for those official splits before treating any metric as held-out performance; do not use test results for checkpoint selection or tuning.
+The combined cache retains the official plant-level split: 35 train, 4 validation, and 5 test plants. Do not move plants between partitions, use test previews to tune thresholds, or repeatedly choose models using test results.
 
 ## 6. Cache encoder predictions
 

@@ -113,15 +113,21 @@ def load_training_batch(cfg: DictConfig, device: torch.device) -> PlantBatch:
     return collate_plant_samples([load_training_sample(cfg)]).to(device)
 
 
-def create_training_loader(cfg: DictConfig) -> DataLoader | list[PlantBatch]:
+def create_split_loader(
+    cfg: DictConfig, split: str, *, shuffle: bool
+) -> DataLoader | list[PlantBatch]:
     manifest = Path(cfg.data.processed_root) / "manifest.json"
     if manifest.is_file():
-        dataset = ProcessedTomatoDataset(cfg.data.processed_root, split=str(cfg.data.split))
+        dataset = ProcessedTomatoDataset(cfg.data.processed_root, split=split)
+        if not len(dataset):
+            raise ValueError(
+                f"processed split {split!r} contains no samples at {cfg.data.processed_root}"
+            )
         generator = torch.Generator().manual_seed(int(cfg.seed))
         return DataLoader(
             dataset,
             batch_size=int(cfg.trainer.batch_size),
-            shuffle=True,
+            shuffle=shuffle,
             num_workers=int(cfg.trainer.num_workers),
             collate_fn=collate_plant_samples,
             generator=generator,
@@ -132,6 +138,14 @@ def create_training_loader(cfg: DictConfig) -> DataLoader | list[PlantBatch]:
     raise FileNotFoundError(
         f"processed dataset not found at {cfg.data.processed_root}; run Stage 0 preprocessing first"
     )
+
+
+def create_training_loader(cfg: DictConfig) -> DataLoader | list[PlantBatch]:
+    return create_split_loader(cfg, str(cfg.data.split), shuffle=True)
+
+
+def create_validation_loader(cfg: DictConfig) -> DataLoader | list[PlantBatch]:
+    return create_split_loader(cfg, str(cfg.trainer.validation_split), shuffle=False)
 
 
 def epoch_range(cfg: DictConfig, start_epoch: int) -> range:
@@ -264,12 +278,19 @@ def maybe_load_upstream(
     cfg: DictConfig,
 ) -> str | None:
     if path and Path(path).is_file():
-        load_checkpoint(
-            path,
-            module,
-            expected_preprocessing_hash=sample.metadata.get("preprocessing_hash"),
-            expected_max_nodes=int(cfg.data.max_nodes),
-        )
+        try:
+            load_checkpoint(
+                path,
+                module,
+                expected_preprocessing_hash=sample.metadata.get("preprocessing_hash"),
+                expected_max_nodes=int(cfg.data.max_nodes),
+            )
+        except ValueError:
+            # Smoke runs use the synthetic tiny fixture and must not accidentally
+            # consume a production checkpoint found at a default path.
+            if bool(cfg.trainer.fast_dev_run):
+                return None
+            raise
         return checkpoint_sha256(path)
     if not bool(cfg.trainer.fast_dev_run):
         raise FileNotFoundError(f"required upstream checkpoint not found: {path}")
