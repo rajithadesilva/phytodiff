@@ -19,6 +19,7 @@ def create_tomatowur_fixture(root: Path, points: int = 80) -> Path:
     y = rng.normal(0, 0.002, points)
     semantic = np.full(points, 2)
     semantic[points // 2 :] = 4
+    semantic[-6] = 255
     semantic[-5:] = 3
     pc_lines = ["x,y,z,blue,green,red,nx,ny,nz"]
     labels = ["semantic,leaf_stem_instances"]
@@ -53,4 +54,3 @@ def create_tomatowur_fixture(root: Path, points: int = 80) -> Path:
     split_path = split_dir / "train.json"
     split_path.write_text(json.dumps(split), encoding="utf-8")
     return split_path
-

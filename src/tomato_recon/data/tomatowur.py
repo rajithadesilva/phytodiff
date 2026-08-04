@@ -195,9 +195,14 @@ class TomatoWURReader:
             n,
             IGNORE_INDEX,
         )
-        semantic = np.where(np.isfinite(semantic_values), semantic_values, IGNORE_INDEX).astype(
-            np.int64
-        )
+        # TomatoWUR uses the common uint8 sentinel 255 for points without a
+        # semantic annotation. Convert it to the project's loss ignore index
+        # instead of treating it as an additional semantic class.
+        semantic = np.where(
+            np.isfinite(semantic_values) & (semantic_values != 255),
+            semantic_values,
+            IGNORE_INDEX,
+        ).astype(np.int64)
         valid_semantic = set(np.unique(semantic).tolist()) - {IGNORE_INDEX}
         if not valid_semantic.issubset({0, 1, 2, 3, 4}):
             raise ValueError(f"unsupported TomatoWUR semantic labels: {sorted(valid_semantic)}")

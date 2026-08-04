@@ -15,6 +15,8 @@ TomatoWUR_v3/
 
 Point CSV fields are metric `x,y,z`, byte-range `blue,green,red`, and `nx,ny,nz`. The loader converts BGR to canonical RGB `[0,1]`. Annotation aliases are accepted for semantic and instance columns; official semantics are background 0, leaf 1, main stem 2, support pole 3, and side stem 4. Skeleton CSV fields are `x_skeleton,y_skeleton,z_skeleton,vid,parentid,edgetype`; optional measured traits are `gt_int_length`, `gt_int_diameter`, `gt_ph_angle`, and `gt_lf_angle`. Missing traits remain NaN/masked.
 
+Raw semantic value 255 denotes an unlabeled point and is converted to the internal ignore index (-100). Such points remain available to geometry-based auxiliary targets but are excluded from semantic cross-entropy.
+
 Split JSON entries must resolve point-cloud, label, and skeleton paths. Official key names `file_name`, `sem_seg_file_name`, and `skeleton_file_name` are supported, as are explicit aliases. Alternate files/views of one plant must stay in one plant-level split.
 
 ## Deterministic conversion
@@ -34,4 +36,3 @@ Split JSON entries must resolve point-cloud, label, and skeleton paths. Official
 Processed files contain the canonical tensor fields documented in [MODEL_CONTRACTS.md](MODEL_CONTRACTS.md). A cache is rejected when checkpoint preprocessing hash or K differs.
 
 Fruit proposals belong under `<processed_root>/fruit_pseudo/`. The included script writes the explicit pseudo-label cache contract but intentionally fabricates no fruit supervision. An external offline detector may populate `points` and `confidence`; predictions below `fruit.min_confidence` are excluded, and fruit never enters primary metrics.
-

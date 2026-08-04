@@ -8,6 +8,7 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 from tests.fixtures import create_tomatowur_fixture
+from tomato_recon.data.schemas import IGNORE_INDEX
 from tomato_recon.data.preprocess import preprocess_dataset
 from tomato_recon.data.tomatowur import ProcessedTomatoDataset
 
@@ -47,6 +48,7 @@ class PreprocessingIntegrationTests(unittest.TestCase):
             sample.validate()
             self.assertEqual(sample.plant_id, "fixture_plant")
             self.assertFalse(bool((sample.semantic == 3).any()))
+            self.assertTrue(bool((sample.semantic == IGNORE_INDEX).any()))
             self.assertEqual(sample.metadata["support_pole_point_count"], 5)
             self.assertTrue((processed / "samples/fixture_plant.graph.json").is_file())
             self.assertTrue((processed / "samples/fixture_plant.params.json").is_file())
@@ -56,4 +58,3 @@ class PreprocessingIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

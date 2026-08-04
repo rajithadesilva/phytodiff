@@ -6,7 +6,7 @@ split: train
 split_file: null
 voxel_size_m: 0.001
 skeleton_spacing_m: 0.01
-max_nodes: 512
+max_nodes: 256
 num_points: 100000
 use_rgb: true
 use_normals: true
