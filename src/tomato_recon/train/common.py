@@ -6,6 +6,8 @@ import json
 import os
 import random
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +22,66 @@ from tomato_recon.data.schemas import PlantBatch, PlantSample
 from tomato_recon.data.tomatowur import ProcessedTomatoDataset, make_tiny_sample
 
 
+class TrainingProgress:
+    """Compact interactive progress with log-friendly non-TTY output."""
+
+    def __init__(self, stage: str, epoch: int, epoch_total: int, batch_total: int) -> None:
+        self.stage = stage
+        self.epoch = epoch
+        self.epoch_total = max(epoch_total, epoch)
+        self.batch_total = max(batch_total, 1)
+        self.started = time.perf_counter()
+        self.interactive = sys.stdout.isatty()
+        self.log_interval = max(1, self.batch_total // 10)
+        self.last_width = 0
+
+    @staticmethod
+    def _duration(seconds: float) -> str:
+        seconds = max(int(seconds), 0)
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours:d}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+
+    @staticmethod
+    def _losses(totals: dict[str, float], steps: int) -> str:
+        ordered = ["loss", *(name for name in totals if name != "loss")]
+        return " | ".join(
+            f"{name}={totals[name] / max(steps, 1):.4f}" for name in ordered
+        )
+
+    def update(self, totals: dict[str, float], steps: int) -> None:
+        elapsed = time.perf_counter() - self.started
+        eta = elapsed / max(steps, 1) * max(self.batch_total - steps, 0)
+        message = (
+            f"[{self.stage}] Epoch {self.epoch}/{self.epoch_total} | "
+            f"Batch {steps}/{self.batch_total} | {self._losses(totals, steps)} | "
+            f"ETA {self._duration(eta)}"
+        )
+        if self.interactive:
+            padding = " " * max(self.last_width - len(message), 0)
+            print(f"\r{message}{padding}", end="", flush=True)
+            self.last_width = len(message)
+        elif steps == 1 or steps == self.batch_total or steps % self.log_interval == 0:
+            print(message, flush=True)
+
+    def close(self, metrics: dict[str, float]) -> None:
+        elapsed = time.perf_counter() - self.started
+        message = (
+            f"[{self.stage}] Epoch {self.epoch}/{self.epoch_total} complete | "
+            f"{self._losses(metrics, 1)} | elapsed {self._duration(elapsed)}"
+        )
+        if self.interactive:
+            padding = " " * max(self.last_width - len(message), 0)
+            print(f"\r{message}{padding}", flush=True)
+        else:
+            print(message, flush=True)
+
+
 def seed_everything(seed: int, deterministic: bool = True) -> None:
+    if deterministic:
+        # Must be set before the first CUDA operation for deterministic cuBLAS
+        # matrix multiplication and cdist kernels.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

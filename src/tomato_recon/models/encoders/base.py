@@ -78,8 +78,11 @@ def encoder_losses(
     skeleton_threshold_m: float = 0.006,
 ) -> dict[str, Tensor]:
     semantic_target = semantic.masked_fill(~point_valid, ignore_index)
+    semantic_logits = output.semantic_logits
     sem = torch.nn.functional.cross_entropy(
-        output.semantic_logits.transpose(1, 2), semantic_target, ignore_index=ignore_index
+        semantic_logits.reshape(-1, semantic_logits.shape[-1]),
+        semantic_target.reshape(-1),
+        ignore_index=ignore_index,
     )
     skeleton_target, offset_target = nearest_skeleton_targets(
         output.point_xyz, node_xyz, node_valid, skeleton_threshold_m
@@ -121,4 +124,3 @@ def encoder_losses(
         "offset": offset,
         "junction": junction,
     }
-

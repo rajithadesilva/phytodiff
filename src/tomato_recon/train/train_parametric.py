@@ -15,6 +15,7 @@ from tomato_recon.models.encoders.base import PointEncoder
 from tomato_recon.models.encoders.registry import create_backbone_from_config
 from tomato_recon.models.graph.edge_head import BiologicalGraphModel
 from tomato_recon.train.common import (
+    TrainingProgress,
     create_training_loader,
     epoch_range,
     load_checkpoint,
@@ -113,9 +114,15 @@ def main(argv: list[str] | None = None) -> None:
     best_loss = float("inf")
     metrics = {}
     prediction = None
+    epoch_total = (
+        start_epoch + 1
+        if bool(cfg.trainer.fast_dev_run)
+        else max(int(cfg.trainer.max_epochs), start_epoch + 1)
+    )
     for epoch in epoch_range(cfg, start_epoch):
-        total = 0.0
+        totals = {"loss": 0.0}
         steps = 0
+        progress_bar = TrainingProgress("parametric", epoch + 1, epoch_total, len(loader))
         for cpu_batch in loader:
             batch = cpu_batch.to(device)
             with torch.no_grad():
@@ -139,11 +146,13 @@ def main(argv: list[str] | None = None) -> None:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
-            total += float(loss.detach().cpu())
+            totals["loss"] += float(loss.detach().cpu())
             steps += 1
+            progress_bar.update(totals, steps)
             if bool(cfg.trainer.fast_dev_run):
                 break
-        metrics = {"loss": total / max(steps, 1)}
+        metrics = {"loss": totals["loss"] / max(steps, 1)}
+        progress_bar.close(metrics)
         if metrics["loss"] <= best_loss:
             best_loss = metrics["loss"]
             save_checkpoint(

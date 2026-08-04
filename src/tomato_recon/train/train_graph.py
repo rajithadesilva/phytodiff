@@ -17,6 +17,7 @@ from tomato_recon.models.diffusion.scheduler import DiffusionScheduler
 from tomato_recon.models.graph.edge_head import BiologicalGraphModel, graph_training_loss
 from tomato_recon.models.graph.decode import decode_plant_graph
 from tomato_recon.train.common import (
+    TrainingProgress,
     create_training_loader,
     epoch_range,
     load_checkpoint,
@@ -93,9 +94,15 @@ def main(argv: list[str] | None = None) -> None:
     best_loss = float("inf")
     metrics = {}
     scores = skeleton = None
+    epoch_total = (
+        start_epoch + 1
+        if bool(cfg.trainer.fast_dev_run)
+        else max(int(cfg.trainer.max_epochs), start_epoch + 1)
+    )
     for epoch in epoch_range(cfg, start_epoch):
         totals: dict[str, float] = {}
         steps = 0
+        progress_bar = TrainingProgress("graph", epoch + 1, epoch_total, len(loader))
         progress = (epoch + 1) / max(int(cfg.trainer.max_epochs), 1)
         noise_std = 0.0 if progress <= 1 / 3 else (0.002 if progress <= 2 / 3 else 0.004)
         for cpu_batch in loader:
@@ -149,10 +156,12 @@ def main(argv: list[str] | None = None) -> None:
             for name, value in values.items():
                 totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
             steps += 1
+            progress_bar.update(totals, steps)
             if bool(cfg.trainer.fast_dev_run):
                 break
         metrics = {name: value / max(steps, 1) for name, value in totals.items()}
         metrics["curriculum_noise_std_m"] = noise_std
+        progress_bar.close(metrics)
         if metrics["loss"] <= best_loss:
             best_loss = metrics["loss"]
             save_checkpoint(

@@ -2,6 +2,8 @@
 
 The stages are deliberately separate. Do not skip ahead, mix preprocessing hashes, change K between stages, or tune any setting on the test split. Use `--resume PATH` to resume the same stage; checkpoint validation rejects incompatible caches.
 
+Every training stage reports epoch and batch progress, running component losses, ETA, and elapsed epoch time. Interactive terminals update one line in place; redirected or captured logs emit periodic progress lines.
+
 ## 1. Build Docker and verify GPU
 
 - Prerequisite: Docker with BuildKit and NVIDIA Container Toolkit.

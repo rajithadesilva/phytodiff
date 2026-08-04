@@ -8,6 +8,7 @@ from tomato_recon.config import load_config
 from tomato_recon.models.encoders.base import PointEncoder, encoder_losses, nearest_skeleton_targets
 from tomato_recon.models.encoders.registry import create_backbone_from_config
 from tomato_recon.train.common import (
+    TrainingProgress,
     create_training_loader,
     epoch_range,
     load_checkpoint,
@@ -47,9 +48,15 @@ def main(argv: list[str] | None = None) -> None:
     best_loss = float("inf")
     metrics = {}
     output = None
+    epoch_total = (
+        start_epoch + 1
+        if bool(cfg.trainer.fast_dev_run)
+        else max(int(cfg.trainer.max_epochs), start_epoch + 1)
+    )
     for epoch in epoch_range(cfg, start_epoch):
         totals: dict[str, float] = {}
         steps = 0
+        progress = TrainingProgress("encoder", epoch + 1, epoch_total, len(loader))
         for cpu_batch in loader:
             batch = cpu_batch.to(device)
             model.train()
@@ -70,9 +77,11 @@ def main(argv: list[str] | None = None) -> None:
             for name, value in losses.items():
                 totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
             steps += 1
+            progress.update(totals, steps)
             if bool(cfg.trainer.fast_dev_run):
                 break
         metrics = {name: value / max(steps, 1) for name, value in totals.items()}
+        progress.close(metrics)
         if metrics["loss"] <= best_loss:
             best_loss = metrics["loss"]
             save_checkpoint(

@@ -17,6 +17,7 @@ from tomato_recon.models.parametric.primitives import generate_plant_geometry
 from tomato_recon.models.pipeline import TomatoReconstructionPipeline
 from tomato_recon.train.train_parametric import fitted_parameter_tensor
 from tomato_recon.train.common import (
+    TrainingProgress,
     create_training_loader,
     epoch_range,
     load_checkpoint,
@@ -88,9 +89,15 @@ def main(argv: list[str] | None = None) -> None:
     best_loss = float("inf")
     metrics = {}
     final_geometry = None
+    epoch_total = (
+        start_epoch + 1
+        if bool(cfg.trainer.fast_dev_run)
+        else max(int(cfg.trainer.max_epochs), start_epoch + 1)
+    )
     for epoch in epoch_range(cfg, start_epoch):
         totals: dict[str, float] = {}
         steps = 0
+        progress = TrainingProgress("joint", epoch + 1, epoch_total, len(loader))
         for cpu_batch in loader:
             batch = cpu_batch.to(device)
             with torch.no_grad():
@@ -207,11 +214,13 @@ def main(argv: list[str] | None = None) -> None:
             for name, value in values.items():
                 totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
             steps += 1
+            progress.update(totals, steps)
             if bool(cfg.trainer.fast_dev_run):
                 break
         metrics = {name: value / max(steps, 1) for name, value in totals.items()}
         metrics["discrete_decode_gradient"] = 0.0
         metrics["staged_pipeline_valid"] = 1.0
+        progress.close(metrics)
         if metrics["loss"] <= best_loss:
             best_loss = metrics["loss"]
             save_checkpoint(
