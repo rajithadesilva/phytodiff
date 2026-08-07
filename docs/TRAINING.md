@@ -23,14 +23,14 @@ Every training stage reports epoch and batch progress, running component losses,
 - Prerequisite: Step 2 and plant-level splits.
 - Command: `docker compose -f docker/docker-compose.yml run --rm preprocess python scripts/prepare_tomatowur.py --config configs/data/tomatowur_v3.yaml`.
 - Expected: deterministic NPZ/graph/parameter caches and one `manifest.json` containing the official train, validation, and test partitions.
-- Verify: `split_counts` is `train: 35`, `val: 4`, `test: 5`. Also inspect `fixed_k_reduction_rate`, source hashes, warnings, label map, `skeleton_quality_review_count`, and `skeleton_quality_review_plant_ids` in the manifest. Review each per-plant `.quality.json` before selecting exclusions.
+- Verify: `split_counts` is `train: 35`, `val: 4`, `test: 5`, `skeleton_annotation_version` is `0-paper-2Dto3D_improved`, and `skeleton_modified_count` is zero. Also inspect source hashes, warnings, and the label map. Every GT skeleton must fit K=256 without resampling or reduction.
 
 ## 4. Visualise three plants
 
 - Prerequisite: three processed plants.
-- Command: `python scripts/visualize_dataset.py data/processed/v3_10mm_K256 --count 3 --output outputs/dataset_preview`.
-- Expected: three PNG previews, each with X-Z, Y-Z, and X-Y projections. Processed edges are red, unresolved suspicious edges are magenta, and replacement parents are cyan.
-- Verify: visually inspect roots, labels, support-pole separation, tips, junctions, scale, connectivity, every magenta edge, and every cyan `parent_id→child_id` repair.
+- Command: `python scripts/visualize_dataset.py data/processed/v3_gt_K256 --count 3 --output outputs/dataset_preview`.
+- Expected: three PNG previews, each with X-Z, Y-Z, and X-Y projections. Red edges are copied directly from the official corrected GT.
+- Verify: visually inspect roots, labels, support-pole separation, tips, junctions, scale, and connectivity.
 
 ## 5. Train Stage 1 encoder
 
@@ -45,7 +45,7 @@ Visualise predictions from the trained Stage 1 checkpoint:
 docker compose -f docker/docker-compose.yml run --rm train \
   python scripts/visualize_encoder_predictions.py \
   --checkpoint outputs/encoder/best.ckpt \
-  --processed-root data/processed/v3_10mm_K256 \
+  --processed-root data/processed/v3_gt_K256 \
   --split test --count 3 \
   --output outputs/encoder/test_visualizations
 ```
@@ -99,14 +99,14 @@ The combined cache retains the official plant-level split: 35 train, 4 validatio
 ## 12. Evaluate the frozen test set once
 
 - Prerequisite: frozen experiment configuration and complete test predictions.
-- Command: `python -m tomato_recon.evaluate --processed-root data/processed/v3_10mm_K256 --predictions outputs/inference --output outputs/evaluation/metrics.json`.
+- Command: `python -m tomato_recon.evaluate --processed-root data/processed/v3_gt_K256 --predictions outputs/inference --output outputs/evaluation/metrics.json`.
 - Expected: per-sample/aggregate skeleton, topology, and trait results; geometry/fruit are in `secondary_aggregate`.
 - Verify: `primary_metric_groups` contains skeleton/topology/traits, geometry contains normal consistency when normals exist, and no test result was used for tuning.
 
 ## 13. Infer one sample and export
 
 - Prerequisite: joint checkpoint and processed NPZ or isolated CSV/ASCII PLY.
-- Command: `python -m tomato_recon.infer --config-name infer input.path=data/processed/v3_10mm_K256/samples/PLANT_ID.npz model.pipeline_checkpoint=outputs/joint/best.ckpt inference.num_diffusion_samples=4 output.dir=outputs/inference/PLANT_ID`.
+- Command: `python -m tomato_recon.infer --config-name infer input.path=data/processed/v3_gt_K256/samples/PLANT_ID.npz model.pipeline_checkpoint=outputs/joint/best.ckpt inference.num_diffusion_samples=4 output.dir=outputs/inference/PLANT_ID`.
 - Expected: every file in the inference output contract, including graph, parameters, mesh, traits, uncertainty, preview, USD, and report.
 - Verify: open JSON/PLY outputs and check `export_report.json`; ground-truth node count is not read by sampling.
 

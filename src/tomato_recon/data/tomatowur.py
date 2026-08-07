@@ -93,7 +93,7 @@ class TomatoWURReader:
         self,
         raw_root: str | Path,
         *,
-        annotation_version: str = "0-paper-2Dto3D",
+        annotation_version: str = "0-paper-2Dto3D_improved",
         split: str = "train",
         split_file: str | Path | None = None,
     ) -> None:
@@ -225,41 +225,56 @@ class TomatoWURReader:
                 valid_rows.append(row)
         if not valid_rows:
             raise ValueError(f"skeleton contains no finite nodes: {record.skeleton_path}")
-        node_xyz = np.asarray(
-            [[float(row[key]) for key in ("x_skeleton", "y_skeleton", "z_skeleton")] for row in valid_rows],
-            dtype=np.float32,
-        )
         original_ids = []
         for index, row in enumerate(valid_rows):
             try:
                 original_ids.append(int(float(row.get("vid", index))))
             except ValueError:
                 original_ids.append(index)
-        id_to_index = {value: index for index, value in enumerate(original_ids)}
+        if len(set(original_ids)) != len(original_ids):
+            raise ValueError(f"skeleton vid values must be unique: {record.skeleton_path}")
+        expected_ids = set(range(len(valid_rows)))
+        if set(original_ids) != expected_ids:
+            raise ValueError(
+                "official skeleton vid values must cover the coordinate-row indices "
+                f"0..{len(valid_rows) - 1}: {record.skeleton_path}"
+            )
+
+        # This is an edge-list table, not a node table sorted by vid. As in the
+        # upstream TomatoWUR loader, coordinates are indexed by CSV row while
+        # each row's vid/parentid fields describe one edge between row indices.
+        node_xyz = np.asarray(
+            [
+                [float(row[key]) for key in ("x_skeleton", "y_skeleton", "z_skeleton")]
+                for row in valid_rows
+            ],
+            dtype=np.float32,
+        )
         parent = np.full(len(valid_rows), -1, dtype=np.int64)
         edge_type = np.full(len(valid_rows), "", dtype=object)
-        for index, row in enumerate(valid_rows):
+        for row in valid_rows:
+            try:
+                child_id = int(float(row.get("vid", "")))
+            except ValueError:
+                continue
             raw_parent = row.get("parentid", "")
             try:
                 parent_id = int(float(raw_parent))
             except ValueError:
                 continue
-            if parent_id == original_ids[index]:
+            if parent_id == child_id:
                 continue
-            if parent_id not in id_to_index:
+            if parent_id not in expected_ids:
                 raise ValueError(f"skeleton parent {parent_id} does not exist in {record.skeleton_path}")
-            parent[index] = id_to_index[parent_id]
-            edge_type[index] = row.get("edgetype", "")
+            parent[child_id] = parent_id
+            edge_type[child_id] = row.get("edgetype", "")
         roots = np.flatnonzero(parent < 0)
         if len(roots) != 1:
-            # The official graph is rooted; repair only the common blank-root ambiguity.
-            root = int(roots[np.argmin(node_xyz[roots, 2])]) if len(roots) else int(np.argmin(node_xyz[:, 2]))
-            for other in roots:
-                if int(other) != root:
-                    parent[other] = root
-            parent[root] = -1
-        else:
-            root = int(roots[0])
+            raise ValueError(
+                f"official skeleton must have exactly one root, found {len(roots)}: "
+                f"{record.skeleton_path}"
+            )
+        root = int(roots[0])
         traits: dict[str, np.ndarray] = {}
         for name in ("gt_int_length", "gt_int_diameter", "gt_ph_angle", "gt_lf_angle"):
             values = []
@@ -277,7 +292,7 @@ class TomatoWURReader:
             "semantic": semantic,
             "instance": instance,
             "node_xyz": node_xyz,
-            "node_ids": np.asarray(original_ids, dtype=np.int64),
+            "node_ids": np.arange(len(valid_rows), dtype=np.int64),
             "parent_index": parent,
             "edge_type": edge_type,
             "root_index": root,

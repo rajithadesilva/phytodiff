@@ -14,7 +14,7 @@ TomatoWUR CSVs -> deterministic fixed-K cache -> point encoder
 ```
 
 - Typed contracts for samples, encoder output, skeleton predictions, graphs, organ parameters, geometry, and export reports.
-- Official TomatoWUR v3 CSV/JSON adapter, metric root normalization, support-pole separation, deterministic voxel sampling, skeleton resampling, and topology-preserving fixed-K reduction.
+- Official TomatoWUR v3 CSV/JSON adapter, corrected ground-truth skeletons, metric root normalization, support-pole separation, deterministic voxel sampling, and lossless fixed-K padding.
 - Configurable PointNeXt-style default backbone plus lazy Pointcept PTv3, Sonata-PTv3, and LitePT adapters with actionable dependency errors.
 - Six-dimensional fixed-K diffusion over XYZ and parent flow, with existence/confidence heads, duplicate/bounds losses, FPS initialization, DDIM sampling, flow normalization, and NMS.
 - Separate organ/role/visibility heads, sparse k-nearest parent scoring, hard botanical masks, root selection, maximum directed spanning arborescence, and main-stem continuity.
@@ -67,23 +67,21 @@ Prerequisite: Step 2 and plant-level split JSONs.
 ```bash
 docker compose -f docker/docker-compose.yml run --rm preprocess \
   python scripts/prepare_tomatowur.py --config configs/data/tomatowur_v3.yaml
-python -c "import json; m=json.load(open('data/processed/v3_10mm_K256/manifest.json')); print(m['sample_count'], m['split_counts'], m['fixed_k_reduction_rate'], m['warnings'])"
+python -c "import json; m=json.load(open('data/processed/v3_gt_K256/manifest.json')); print(m['sample_count'], m['split_counts'], m['skeleton_annotation_version'], m['skeleton_modified_count'], m['warnings'])"
 ```
 
-Expected: `manifest.json` and versioned `.npz`, `.graph.json`, and `.params.json` caches for all 44 plants. Verify the official plant-level counts are 35 train, 4 validation, and 5 test, and that truncation is acceptable before tuning K on train/validation only.
-
-Stage 0 also writes one `.quality.json` per plant. The default removes suspect long/unsupported parent edges and reconnects their children to short, supported, cycle-safe parents. Inspect `skeleton_quality_repaired_count`, the per-edge repair records, and any remaining review IDs before training.
+Expected: `manifest.json` and versioned `.npz`, `.graph.json`, and `.params.json` caches for all 44 plants. Verify the official plant-level counts are 35 train, 4 validation, and 5 test. Stage 0 reads `0-paper-2Dto3D_improved` and preserves every official GT node and parent edge exactly; it only translates coordinates to the root-centred frame and pads to K=256. It fails instead of modifying a skeleton if K is too small.
 
 ### 4. Visualise at least three processed plants
 
 Prerequisite: at least three Stage 0 samples.
 
 ```bash
-python scripts/visualize_dataset.py data/processed/v3_10mm_K256 --count 3 --output outputs/dataset_preview
+python scripts/visualize_dataset.py data/processed/v3_gt_K256 --count 3 --output outputs/dataset_preview
 test "$(find outputs/dataset_preview -name '*.png' | wc -l)" -ge 3
 ```
 
-Expected: three root-centred, three-view point-cloud/skeleton previews. Inspect root position, support-pole removal, labels, junctions, and tips. Red lines are processed edges, magenta lines are unresolved suspect edges, and cyan lines are replacement parents.
+Expected: three root-centred, three-view point-cloud/skeleton previews. Inspect root position, support-pole removal, labels, junctions, and tips. Red lines are the official GT parent edges; no repair edges are generated.
 
 ### 5. Train Stage 1: point encoder
 
@@ -192,7 +190,7 @@ Expected: `outputs/joint/best.ckpt` containing the combined model and exact upst
 Prerequisite: a frozen experiment config and test predictions; do not tune on this output.
 
 ```bash
-python -m tomato_recon.evaluate --processed-root data/processed/v3_10mm_K256 \
+python -m tomato_recon.evaluate --processed-root data/processed/v3_gt_K256 \
   --predictions outputs/inference --output outputs/evaluation/metrics.json
 python -c "import json; m=json.load(open('outputs/evaluation/metrics.json')); print(m['primary_metric_groups'], m['aggregate'])"
 ```
@@ -205,7 +203,7 @@ Prerequisite: Stage 5 checkpoint and a processed `.npz` (or isolated TomatoWUR-s
 
 ```bash
 python -m tomato_recon.infer --config-name infer \
-  input.path=data/processed/v3_10mm_K256/samples/PLANT_ID.npz \
+  input.path=data/processed/v3_gt_K256/samples/PLANT_ID.npz \
   model.pipeline_checkpoint=outputs/joint/best.ckpt \
   inference.num_diffusion_samples=4 output.dir=outputs/inference/PLANT_ID
 test -f outputs/inference/PLANT_ID/plant_graph.json && test -f outputs/inference/PLANT_ID/plant.usd

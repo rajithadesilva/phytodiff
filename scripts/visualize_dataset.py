@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import json
 import math
 from pathlib import Path
-from typing import Any
 
 import torch
 from PIL import Image, ImageDraw
@@ -34,21 +32,18 @@ def _project(
     return torch.stack([x, y], dim=-1)
 
 
-def render(sample, path: Path, quality: dict[str, Any] | None = None) -> None:
+def render(sample, path: Path) -> None:
     panel_size = 520
     header = 52
     margin = 24
     canvas = Image.new("RGB", (panel_size * len(PROJECTIONS), panel_size + header), "white")
     draw = ImageDraw.Draw(canvas)
-    quality = quality or {"status": "unavailable", "edges": []}
-    suspicious = [edge for edge in quality.get("edges", []) if edge.get("suspicious")]
-    repairs = quality.get("repairs", [])
-    status = str(quality.get("status", "unavailable"))
-    status_colour = (180, 20, 120) if status == "review" else (20, 120, 80)
-    draw.text((12, 8), f"{sample.plant_id} | skeleton quality: {status}", fill=status_colour)
+    source = sample.metadata.get("skeleton_source", "unknown")
+    version = sample.metadata.get("skeleton_annotation_version", "unknown")
+    draw.text((12, 8), f"{sample.plant_id} | skeleton: {source}", fill=(20, 120, 80))
     draw.text(
         (12, 27),
-        "processed: red | suspicious: magenta | repaired replacement: cyan | parent_id→child_id",
+        f"annotation: {version} | official GT edges: red | no repair/resampling/reduction",
         fill=(50, 50, 50),
     )
 
@@ -58,17 +53,7 @@ def render(sample, path: Path, quality: dict[str, Any] | None = None) -> None:
     valid_indices = sample.node_valid.nonzero(as_tuple=False).flatten()
     nodes = sample.node_xyz[valid_indices]
     remap = {old: new for new, old in enumerate(valid_indices.tolist())}
-    suspicious_xyz = []
-    for edge in suspicious:
-        suspicious_xyz.extend([edge["start_xyz"], edge["end_xyz"]])
-    for repair in repairs:
-        suspicious_xyz.extend([repair["new_start_xyz"], repair["end_xyz"]])
-    extra = torch.as_tensor(suspicious_xyz, dtype=sample.xyz.dtype)
-    bounds_xyz = (
-        torch.cat([point_xyz, nodes, extra], dim=0)
-        if len(extra)
-        else torch.cat([point_xyz, nodes], dim=0)
-    )
+    bounds_xyz = torch.cat([point_xyz, nodes], dim=0)
 
     for panel_index, (label, axes) in enumerate(PROJECTIONS):
         left = panel_index * panel_size
@@ -117,65 +102,6 @@ def render(sample, path: Path, quality: dict[str, Any] | None = None) -> None:
                     width=1,
                 )
 
-        for edge in suspicious:
-            endpoints = torch.tensor(
-                [edge["start_xyz"], edge["end_xyz"]], dtype=sample.xyz.dtype
-            )
-            edge_pixels = _project(
-                endpoints,
-                axes,
-                minimum,
-                scale,
-                left=left,
-                top=top,
-                panel_size=panel_size,
-                margin=margin,
-            )
-            a, b = edge_pixels[0], edge_pixels[1]
-            draw.line(
-                (float(a[0]), float(a[1]), float(b[0]), float(b[1])),
-                fill=(220, 20, 150),
-                width=4,
-            )
-            for point in (a, b):
-                x, y = float(point[0]), float(point[1])
-                draw.ellipse((x - 3, y - 3, x + 3, y + 3), fill=(220, 20, 150))
-            midpoint = (a + b) / 2
-            edge_label = f"{edge['parent_id']}→{edge['child_id']}"
-            draw.text(
-                (float(midpoint[0]) + 3, float(midpoint[1]) + 3),
-                edge_label,
-                fill=(120, 0, 80),
-            )
-
-        for repair in repairs:
-            endpoints = torch.tensor(
-                [repair["new_start_xyz"], repair["end_xyz"]], dtype=sample.xyz.dtype
-            )
-            edge_pixels = _project(
-                endpoints,
-                axes,
-                minimum,
-                scale,
-                left=left,
-                top=top,
-                panel_size=panel_size,
-                margin=margin,
-            )
-            a, b = edge_pixels[0], edge_pixels[1]
-            draw.line(
-                (float(a[0]), float(a[1]), float(b[0]), float(b[1])),
-                fill=(0, 170, 190),
-                width=4,
-            )
-            edge_label = f"{repair['new_parent_id']}→{repair['child_id']}"
-            midpoint = (a + b) / 2
-            draw.text(
-                (float(midpoint[0]) + 3, float(midpoint[1]) + 3),
-                edge_label,
-                fill=(0, 90, 110),
-            )
-
     canvas.save(path)
 
 
@@ -191,23 +117,10 @@ def main() -> None:
             f"visualisation smoke test needs {args.count} plants, found {len(dataset)}"
         )
     args.output.mkdir(parents=True, exist_ok=True)
-    review_count = 0
-    repaired_count = 0
     for index in range(args.count):
         sample = dataset[index]
-        quality_path = args.processed_root / "samples" / f"{sample.plant_id}.quality.json"
-        quality = (
-            json.loads(quality_path.read_text(encoding="utf-8"))
-            if quality_path.is_file()
-            else None
-        )
-        review_count += int(quality is not None and quality.get("status") == "review")
-        repaired_count += int(quality is not None and quality.get("status") == "repaired")
-        render(sample, args.output / f"{sample.plant_id}.png", quality)
-    print(
-        f"wrote {args.count} previews to {args.output}; "
-        f"{review_count} require review and {repaired_count} were repaired"
-    )
+        render(sample, args.output / f"{sample.plant_id}.png")
+    print(f"wrote {args.count} official-GT previews to {args.output}")
 
 
 if __name__ == "__main__":

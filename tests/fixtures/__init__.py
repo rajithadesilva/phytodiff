@@ -8,8 +8,9 @@ import numpy as np
 
 def create_tomatowur_fixture(root: Path, points: int = 80) -> Path:
     point_dir = root / "point_clouds"
-    annotation_dir = root / "ann_versions" / "0-paper-2Dto3D" / "annotations" / "fixture_plant"
-    split_dir = root / "ann_versions" / "0-paper-2Dto3D" / "json"
+    version = "0-paper-2Dto3D_improved"
+    annotation_dir = root / "ann_versions" / version / "annotations" / "fixture_plant"
+    split_dir = root / "ann_versions" / version / "json"
     point_dir.mkdir(parents=True)
     annotation_dir.mkdir(parents=True)
     split_dir.mkdir(parents=True)
@@ -37,8 +38,8 @@ def create_tomatowur_fixture(root: Path, points: int = 80) -> Path:
         "x_skeleton,y_skeleton,z_skeleton,vid,parentid,edgetype,gt_int_length,gt_int_diameter,gt_ph_angle,gt_lf_angle\n"
         "0,0,0,0,,,nan,nan,nan,nan\n"
         "0,0,0.08,1,0,<,0.08,0.006,nan,nan\n"
-        "0,0,0.16,2,1,<,0.08,0.005,nan,nan\n"
-        "0.05,0,0.11,3,1,+,nan,nan,45,40\n"
+        "0,0,0.16,3,1,+,0.08,0.005,nan,nan\n"
+        "0.05,0,0.11,2,1,<,nan,nan,45,40\n"
         "0.09,0,0.12,4,3,<,nan,nan,nan,nan\n",
         encoding="utf-8",
     )

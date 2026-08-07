@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -64,230 +62,6 @@ def apply_inverse_normalisation(xyz: np.ndarray, normalised_to_original: np.ndar
     return (xyz_h @ normalised_to_original.T)[:, :3]
 
 
-def evaluate_skeleton_quality(
-    node_xyz: np.ndarray,
-    parent_index: np.ndarray,
-    edge_type: np.ndarray,
-    point_xyz: np.ndarray,
-    semantic: np.ndarray,
-    *,
-    node_ids: np.ndarray | None = None,
-    max_edge_length_m: float = 0.08,
-    sample_spacing_m: float = 0.005,
-    support_distance_m: float = 0.015,
-    min_support_ratio: float = 0.65,
-    support_semantic_classes: tuple[int, ...] = (2, 4),
-) -> dict[str, Any]:
-    """Score raw skeleton edges without mutating their annotated topology.
-
-    An edge is suspicious only when it exceeds the configured length and less
-    than the configured fraction of samples lie near stem-labelled scan points.
-    This keeps long but well-supported petioles while exposing unsupported
-    inter-organ shortcuts for review.
-    """
-    if max_edge_length_m <= 0 or sample_spacing_m <= 0 or support_distance_m <= 0:
-        raise ValueError("skeleton quality distances must be positive")
-    if not 0 <= min_support_ratio <= 1:
-        raise ValueError("skeleton quality min_support_ratio must be in [0,1]")
-    node_ids = (
-        np.arange(len(node_xyz), dtype=np.int64)
-        if node_ids is None
-        else np.asarray(node_ids, dtype=np.int64)
-    )
-    support_mask = np.isin(semantic, np.asarray(support_semantic_classes, dtype=np.int64))
-    support_points = point_xyz[support_mask]
-    tree = None
-    if len(support_points):
-        from scipy.spatial import cKDTree
-
-        tree = cKDTree(support_points)
-
-    edges: list[dict[str, Any]] = []
-    for child_index, raw_parent in enumerate(parent_index):
-        parent_index_value = int(raw_parent)
-        if parent_index_value < 0:
-            continue
-        start = node_xyz[parent_index_value]
-        end = node_xyz[child_index]
-        length_m = float(np.linalg.norm(end - start))
-        sample_count = max(3, int(math.ceil(length_m / sample_spacing_m)) + 1)
-        alpha = np.linspace(0.0, 1.0, sample_count, dtype=np.float32)[:, None]
-        query = start[None] * (1.0 - alpha) + end[None] * alpha
-        if tree is None:
-            distances = np.full(sample_count, np.inf, dtype=np.float64)
-        else:
-            distances = np.asarray(tree.query(query, k=1, workers=1)[0])
-        support_ratio = float(np.mean(distances <= support_distance_m))
-        support_distance_p90_m = (
-            float(np.quantile(distances, 0.9)) if np.isfinite(distances).any() else None
-        )
-        length_flag = length_m > max_edge_length_m
-        support_flag = support_ratio < min_support_ratio
-        suspicious = length_flag and support_flag
-        edges.append(
-            {
-                "parent_index": parent_index_value,
-                "child_index": child_index,
-                "parent_id": int(node_ids[parent_index_value]),
-                "child_id": int(node_ids[child_index]),
-                "edge_type": str(edge_type[child_index]),
-                "start_xyz": start.tolist(),
-                "end_xyz": end.tolist(),
-                "length_m": length_m,
-                "sample_count": sample_count,
-                "support_ratio": support_ratio,
-                "support_distance_p90_m": support_distance_p90_m,
-                "length_flag": length_flag,
-                "support_flag": support_flag,
-                "suspicious": suspicious,
-            }
-        )
-    suspicious_edges = [edge for edge in edges if edge["suspicious"]]
-    return {
-        "schema_version": "1.0",
-        "status": "review" if suspicious_edges else "pass",
-        "thresholds": {
-            "max_edge_length_m": max_edge_length_m,
-            "sample_spacing_m": sample_spacing_m,
-            "support_distance_m": support_distance_m,
-            "min_support_ratio": min_support_ratio,
-            "support_semantic_classes": list(support_semantic_classes),
-        },
-        "edge_count": len(edges),
-        "long_edge_count": sum(bool(edge["length_flag"]) for edge in edges),
-        "low_support_edge_count": sum(bool(edge["support_flag"]) for edge in edges),
-        "suspicious_edge_count": len(suspicious_edges),
-        "max_edge_length_m": max((float(edge["length_m"]) for edge in edges), default=0.0),
-        "edges": edges,
-    }
-
-
-def repair_suspicious_skeleton_edges(
-    node_xyz: np.ndarray,
-    parent_index: np.ndarray,
-    edge_type: np.ndarray,
-    point_xyz: np.ndarray,
-    semantic: np.ndarray,
-    quality: dict[str, Any],
-    *,
-    node_ids: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]]]:
-    """Replace flagged parents with short, supported, cycle-safe connections."""
-    thresholds = quality["thresholds"]
-    max_length = float(thresholds["max_edge_length_m"])
-    spacing = float(thresholds["sample_spacing_m"])
-    support_distance = float(thresholds["support_distance_m"])
-    min_support = float(thresholds["min_support_ratio"])
-    support_classes = tuple(int(value) for value in thresholds["support_semantic_classes"])
-    repaired_parent = np.asarray(parent_index, dtype=np.int64).copy()
-    repaired_edge_type = np.asarray(edge_type, dtype=object).copy()
-    node_ids = (
-        np.arange(len(node_xyz), dtype=np.int64)
-        if node_ids is None
-        else np.asarray(node_ids, dtype=np.int64)
-    )
-    support_points = point_xyz[np.isin(semantic, np.asarray(support_classes))]
-    tree = None
-    if len(support_points):
-        from scipy.spatial import cKDTree
-
-        tree = cKDTree(support_points)
-
-    def descendants(index: int) -> set[int]:
-        children = [[] for _ in range(len(repaired_parent))]
-        for child, parent in enumerate(repaired_parent):
-            if parent >= 0:
-                children[int(parent)].append(child)
-        found = {index}
-        stack = [index]
-        while stack:
-            current = stack.pop()
-            for child in children[current]:
-                if child not in found:
-                    found.add(child)
-                    stack.append(child)
-        return found
-
-    def score_edge(parent: int, child: int) -> tuple[float, float]:
-        start, end = node_xyz[parent], node_xyz[child]
-        length = float(np.linalg.norm(end - start))
-        count = max(3, int(math.ceil(length / spacing)) + 1)
-        alpha = np.linspace(0.0, 1.0, count, dtype=np.float32)[:, None]
-        query = start[None] * (1.0 - alpha) + end[None] * alpha
-        if tree is None:
-            return length, 0.0
-        distances = np.asarray(tree.query(query, k=1, workers=1)[0])
-        return length, float(np.mean(distances <= support_distance))
-
-    repairs: list[dict[str, Any]] = []
-    suspicious = sorted(
-        (edge for edge in quality["edges"] if edge["suspicious"]),
-        key=lambda edge: (-float(edge["length_m"]), int(edge["child_index"])),
-    )
-    for original in suspicious:
-        child = int(original["child_index"])
-        old_parent = int(repaired_parent[child])
-        forbidden = descendants(child)
-        candidates: list[tuple[int, float, float]] = []
-        for candidate in range(len(node_xyz)):
-            if candidate in forbidden or candidate == old_parent:
-                continue
-            length, support_ratio = score_edge(candidate, child)
-            if length >= float(original["length_m"]):
-                continue
-            candidates.append((candidate, length, support_ratio))
-        if not candidates:
-            raise ValueError(
-                f"cannot repair suspicious edge {node_ids[old_parent]}->{node_ids[child]}: "
-                "no shorter cycle-safe parent exists"
-            )
-        preferred = [
-            value for value in candidates if value[1] <= max_length and value[2] >= min_support
-        ]
-        if preferred:
-            new_parent, new_length, new_support = min(
-                preferred, key=lambda value: (value[1], -value[2], value[0])
-            )
-        else:
-            short = [value for value in candidates if value[1] <= max_length]
-            if short:
-                new_parent, new_length, new_support = min(
-                    short, key=lambda value: (-value[2], value[1], value[0])
-                )
-            else:
-                supported = [value for value in candidates if value[2] >= min_support]
-                if not supported:
-                    raise ValueError(
-                        f"cannot repair suspicious edge {node_ids[old_parent]}->{node_ids[child]}: "
-                        "no supported replacement parent exists"
-                    )
-                new_parent, new_length, new_support = min(
-                    supported, key=lambda value: (value[1], -value[2], value[0])
-                )
-        repaired_parent[child] = new_parent
-        repaired_edge_type[child] = "+"
-        _tree_children(repaired_parent)
-        repairs.append(
-            {
-                "child_index": child,
-                "child_id": int(node_ids[child]),
-                "old_parent_index": old_parent,
-                "old_parent_id": int(node_ids[old_parent]),
-                "new_parent_index": int(new_parent),
-                "new_parent_id": int(node_ids[new_parent]),
-                "old_start_xyz": node_xyz[old_parent].tolist(),
-                "new_start_xyz": node_xyz[new_parent].tolist(),
-                "end_xyz": node_xyz[child].tolist(),
-                "old_length_m": float(original["length_m"]),
-                "new_length_m": float(new_length),
-                "new_support_ratio": float(new_support),
-                "new_edge_type": "+",
-            }
-        )
-    _tree_children(repaired_parent)
-    return repaired_parent, repaired_edge_type, repairs
-
-
 def voxel_downsample(
     xyz: np.ndarray,
     voxel_size_m: float,
@@ -330,184 +104,62 @@ def _tree_children(parent: np.ndarray) -> tuple[int, list[list[int]]]:
     return root, children
 
 
-def resample_skeleton_tree(
-    node_xyz: np.ndarray,
-    parent_index: np.ndarray,
-    edge_type: np.ndarray,
-    spacing_m: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if spacing_m <= 0:
-        raise ValueError("skeleton_spacing_m must be positive")
-    root, children = _tree_children(parent_index)
-    new_xyz: list[np.ndarray] = [node_xyz[root]]
-    new_parent: list[int] = [-1]
-    new_edge_type: list[str] = [""]
-    mapping = {root: 0}
-    queue = deque([root])
-    while queue:
-        parent = queue.popleft()
-        for child in sorted(children[parent]):
-            start, end = node_xyz[parent], node_xyz[child]
-            length = float(np.linalg.norm(end - start))
-            steps = max(1, int(math.ceil(length / spacing_m)))
-            current_parent = mapping[parent]
-            for step in range(1, steps + 1):
-                alpha = step / steps
-                new_xyz.append((1 - alpha) * start + alpha * end)
-                new_parent.append(current_parent)
-                new_edge_type.append(str(edge_type[child]))
-                current_parent = len(new_xyz) - 1
-            mapping[child] = current_parent
-            queue.append(child)
-    return (
-        np.asarray(new_xyz, dtype=np.float32),
-        np.asarray(new_parent, dtype=np.int64),
-        np.asarray(new_edge_type, dtype=object),
-    )
-
-
-def _maximal_chains(parent: np.ndarray, children: list[list[int]], anchors: set[int]) -> list[list[int]]:
-    chains: list[list[int]] = []
-    for anchor in sorted(anchors):
-        for first in sorted(children[anchor]):
-            chain = [anchor, first]
-            current = first
-            while current not in anchors and len(children[current]) == 1:
-                current = children[current][0]
-                chain.append(current)
-            chains.append(chain)
-    return chains
-
-
-def topology_preserving_reduce(
+def pad_ground_truth_skeleton(
     node_xyz: np.ndarray,
     parent_index: np.ndarray,
     edge_type: np.ndarray,
     max_nodes: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Reduce a rooted tree while retaining root, junctions, tips and connectivity."""
-    if max_nodes < 2:
-        raise ValueError("max_nodes must be at least two")
-    root, children = _tree_children(parent_index)
-    if len(node_xyz) <= max_nodes:
-        return node_xyz, parent_index, edge_type, np.arange(len(node_xyz), dtype=np.int64)
-    anchors = {root}
-    anchors.update(i for i, value in enumerate(children) if len(value) != 1)
-    if len(anchors) > max_nodes:
+    """Pad an official skeleton to K without changing any GT node or edge."""
+    if max_nodes < 1:
+        raise ValueError("max_nodes must be positive")
+    count = len(node_xyz)
+    if len(parent_index) != count or len(edge_type) != count:
+        raise ValueError("skeleton node, parent, and edge-type arrays must have equal length")
+    _tree_children(parent_index)
+    if count > max_nodes:
         raise ValueError(
-            f"max_nodes={max_nodes} cannot preserve {len(anchors)} root/junction/tip nodes; increase K"
+            f"official ground-truth skeleton has {count} nodes but K={max_nodes}; "
+            "increase max_nodes because GT resampling or reduction is disabled"
         )
-    chains = _maximal_chains(parent_index, children, anchors)
-    capacities = [max(0, len(chain) - 2) for chain in chains]
-    lengths = [
-        float(np.linalg.norm(np.diff(node_xyz[chain], axis=0), axis=1).sum()) for chain in chains
-    ]
-    budget = max_nodes - len(anchors)
-    allocations = [0] * len(chains)
-    available = set(i for i, capacity in enumerate(capacities) if capacity)
-    total_length = sum(lengths[i] for i in available) or float(len(available) or 1)
-    weights = {
-        i: (lengths[i] / total_length if lengths[i] > 0 else 1.0 / max(len(available), 1))
-        for i in available
-    }
-    while budget > 0 and available:
-        # Weighted fair allocation converges to slots proportional to chain arc length.
-        index = min(
-            available,
-            key=lambda i: ((allocations[i] + 1) / max(weights[i], 1e-12), i),
-        )
-        allocations[index] += 1
-        budget -= 1
-        available = {i for i in available if allocations[i] < capacities[i]}
-    selected = set(anchors)
-    for chain, count in zip(chains, allocations, strict=True):
-        if count <= 0:
-            continue
-        internal = np.asarray(chain[1:-1], dtype=np.int64)
-        segment = np.linalg.norm(np.diff(node_xyz[chain], axis=0), axis=1)
-        cumulative = np.cumsum(segment)[:-1]
-        targets = np.linspace(0, segment.sum(), count + 2)[1:-1]
-        candidates = []
-        for target in targets:
-            order = np.argsort(np.abs(cumulative - target), kind="stable")
-            candidates.append(next(int(internal[i]) for i in order if int(internal[i]) not in candidates))
-        selected.update(candidates)
-
-    # Parent-before-child BFS order produces stable slots and makes reconstruction simple.
-    ordered: list[int] = []
-    queue = deque([root])
-    while queue:
-        value = queue.popleft()
-        if value in selected:
-            ordered.append(value)
-        queue.extend(sorted(children[value]))
-    old_to_new = {old: new for new, old in enumerate(ordered)}
-    reduced_parent = np.full(len(ordered), -1, dtype=np.int64)
-    reduced_edge_type = np.full(len(ordered), "", dtype=object)
-    for new, old in enumerate(ordered):
-        ancestor = int(parent_index[old])
-        while ancestor >= 0 and ancestor not in selected:
-            ancestor = int(parent_index[ancestor])
-        if ancestor >= 0:
-            reduced_parent[new] = old_to_new[ancestor]
-            reduced_edge_type[new] = edge_type[old]
-    _tree_children(reduced_parent)
-    return node_xyz[ordered], reduced_parent, reduced_edge_type, np.asarray(ordered)
-
-
-def fixed_k_skeleton(
-    node_xyz: np.ndarray,
-    parent_index: np.ndarray,
-    edge_type: np.ndarray,
-    max_nodes: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, bool]:
-    was_reduced = len(node_xyz) > max_nodes
-    reduced_xyz, reduced_parent, reduced_type, kept = topology_preserving_reduce(
-        node_xyz, parent_index, edge_type, max_nodes
-    )
-    count = len(reduced_xyz)
     padded_xyz = np.zeros((max_nodes, 3), dtype=np.float32)
     padded_parent = np.full(max_nodes, -1, dtype=np.int64)
     padded_edge_type = np.full(max_nodes, "", dtype=object)
     valid = np.zeros(max_nodes, dtype=bool)
-    padded_xyz[:count] = reduced_xyz
-    padded_parent[:count] = reduced_parent
-    padded_edge_type[:count] = reduced_type
+    padded_xyz[:count] = node_xyz
+    padded_parent[:count] = parent_index
+    padded_edge_type[:count] = edge_type
     valid[:count] = True
-    return padded_xyz, padded_parent, padded_edge_type, valid, was_reduced
-
-
-def _nearest_semantics(node_xyz: np.ndarray, xyz: np.ndarray, semantic: np.ndarray) -> np.ndarray:
-    if not len(xyz):
-        return np.full(len(node_xyz), int(OrganType.UNKNOWN), dtype=np.int64)
-    result = np.empty(len(node_xyz), dtype=np.int64)
-    mapping = {
-        int(SemanticClass.LEAF): int(OrganType.LEAF_STRUCTURE),
-        int(SemanticClass.MAIN_STEM): int(OrganType.MAIN_STEM),
-        int(SemanticClass.SIDE_STEM): int(OrganType.SIDE_STEM),
-    }
-    chunk_size = 256
-    for start in range(0, len(node_xyz), chunk_size):
-        distances = np.sum((node_xyz[start : start + chunk_size, None] - xyz[None]) ** 2, axis=-1)
-        nearest = np.argmin(distances, axis=1)
-        result[start : start + chunk_size] = [
-            mapping.get(int(semantic[index]), int(OrganType.UNKNOWN)) for index in nearest
-        ]
-    return result
+    return padded_xyz, padded_parent, padded_edge_type, valid
 
 
 def derive_node_targets(
     node_xyz: np.ndarray,
     parent_index: np.ndarray,
+    edge_type: np.ndarray,
     node_valid: np.ndarray,
     xyz: np.ndarray,
-    semantic: np.ndarray,
     visibility_distance_m: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     count = int(node_valid.sum())
     organ = np.full(len(node_valid), int(OrganType.UNKNOWN), dtype=np.int64)
-    organ[:count] = _nearest_semantics(node_xyz[:count], xyz, semantic)
-    _, children = _tree_children(parent_index[:count])
+    root, children = _tree_children(parent_index[:count])
+    organ[root] = int(OrganType.MAIN_STEM)
+    stack = [root]
+    while stack:
+        parent = stack.pop()
+        for child in children[parent]:
+            relation = str(edge_type[child])
+            if relation not in {"<", "+"}:
+                raise ValueError(
+                    f"unsupported official skeleton edge type {relation!r} at node {child}"
+                )
+            organ[child] = (
+                int(OrganType.SIDE_STEM)
+                if relation == "+" or organ[parent] == int(OrganType.SIDE_STEM)
+                else int(OrganType.MAIN_STEM)
+            )
+            stack.append(child)
     role = np.full(len(node_valid), int(TopologyRole.CONTINUATION), dtype=np.int64)
     for index in range(count):
         if parent_index[index] < 0:
@@ -548,6 +200,7 @@ def graph_from_targets(
     organ_type: np.ndarray,
     topology_role: np.ndarray,
     visibility: np.ndarray,
+    annotated_edge_type: np.ndarray,
     *,
     source: dict[str, Any],
 ) -> PlantGraph:
@@ -570,9 +223,7 @@ def graph_from_targets(
         parent = int(parent_index[child])
         if parent >= 0:
             edge_kind = (
-                "continuation"
-                if organ_type[parent] == organ_type[child] and topology_role[parent] != TopologyRole.JUNCTION
-                else "attachment"
+                "continuation" if str(annotated_edge_type[child]) == "<" else "attachment"
             )
             edges.append(GraphEdge(parent=parent, child=child, edge_type=edge_kind, confidence=1.0))
     graph = PlantGraph(
@@ -668,7 +319,7 @@ def fit_parametric_targets(
 
 def preprocess_record(
     raw: dict[str, Any], cfg: DictConfig, source: dict[str, Any]
-) -> tuple[PlantSample, dict[str, Any], np.ndarray, dict[str, Any]]:
+) -> tuple[PlantSample, dict[str, Any], np.ndarray]:
     xyz = raw["xyz"]
     if len(xyz) == 0 or not np.isfinite(xyz).all():
         raise ValueError(f"{raw['plant_id']}: XYZ must be non-empty and finite")
@@ -693,92 +344,25 @@ def preprocess_record(
             value[selection] for value in (xyz, rgb, normals, semantic, instance)
         )
         original_indices = original_indices[selection]
-    quality_cfg = cfg.get("skeleton_quality", {})
-    quality_enabled = bool(quality_cfg.get("enabled", True))
-    working_parent = np.asarray(raw["parent_index"], dtype=np.int64).copy()
-    working_edge_type = np.asarray(raw["edge_type"], dtype=object).copy()
-    if quality_enabled:
-        quality = evaluate_skeleton_quality(
-            skeleton,
-            working_parent,
-            working_edge_type,
-            xyz,
-            semantic,
-            node_ids=raw.get("node_ids"),
-            max_edge_length_m=float(quality_cfg.get("max_edge_length_m", 0.08)),
-            sample_spacing_m=float(quality_cfg.get("sample_spacing_m", 0.005)),
-            support_distance_m=float(quality_cfg.get("support_distance_m", 0.015)),
-            min_support_ratio=float(quality_cfg.get("min_support_ratio", 0.65)),
-            support_semantic_classes=tuple(
-                int(value) for value in quality_cfg.get("support_semantic_classes", [2, 4])
-            ),
-        )
-        if quality["status"] == "review" and str(
-            quality_cfg.get("action", "report")
-        ) == "repair_flagged":
-            original_quality = quality
-            working_parent, working_edge_type, repairs = repair_suspicious_skeleton_edges(
-                skeleton,
-                working_parent,
-                working_edge_type,
-                xyz,
-                semantic,
-                original_quality,
-                node_ids=raw.get("node_ids"),
-            )
-            quality = evaluate_skeleton_quality(
-                skeleton,
-                working_parent,
-                working_edge_type,
-                xyz,
-                semantic,
-                node_ids=raw.get("node_ids"),
-                max_edge_length_m=float(quality_cfg.get("max_edge_length_m", 0.08)),
-                sample_spacing_m=float(quality_cfg.get("sample_spacing_m", 0.005)),
-                support_distance_m=float(quality_cfg.get("support_distance_m", 0.015)),
-                min_support_ratio=float(quality_cfg.get("min_support_ratio", 0.65)),
-                support_semantic_classes=tuple(
-                    int(value)
-                    for value in quality_cfg.get("support_semantic_classes", [2, 4])
-                ),
-            )
-            quality["original_status"] = original_quality["status"]
-            quality["original_suspicious_edge_count"] = original_quality[
-                "suspicious_edge_count"
-            ]
-            quality["removed_edges"] = [
-                edge for edge in original_quality["edges"] if edge["suspicious"]
-            ]
-            quality["repairs"] = repairs
-            if quality["suspicious_edge_count"] == 0:
-                quality["status"] = "repaired"
-    else:
-        quality = {
-            "schema_version": "1.0",
-            "status": "disabled",
-            "edge_count": max(len(skeleton) - 1, 0),
-            "long_edge_count": 0,
-            "low_support_edge_count": 0,
-            "suspicious_edge_count": 0,
-            "max_edge_length_m": 0.0,
-            "edges": [],
-        }
-    quality["plant_id"] = raw["plant_id"]
-    resampled_xyz, resampled_parent, resampled_edge_type = resample_skeleton_tree(
-        skeleton, working_parent, working_edge_type, float(cfg.skeleton_spacing_m)
-    )
-    pre_reduction_count = len(resampled_xyz)
-    node_xyz, parent, _, valid, reduced = fixed_k_skeleton(
-        resampled_xyz, resampled_parent, resampled_edge_type, int(cfg.max_nodes)
+    node_xyz, parent, edge_type, valid = pad_ground_truth_skeleton(
+        skeleton,
+        np.asarray(raw["parent_index"], dtype=np.int64),
+        np.asarray(raw["edge_type"], dtype=object),
+        int(cfg.max_nodes),
     )
     organ, role, visibility, flow = derive_node_targets(
         node_xyz,
         parent,
+        edge_type,
         valid,
         xyz,
-        semantic,
         float(cfg.visibility_distance_m),
     )
+    node_ids = np.asarray(raw["node_ids"], dtype=np.int64)
+    official_parent_ids = [
+        int(node_ids[parent_index]) if int(parent_index) >= 0 else None
+        for parent_index in raw["parent_index"]
+    ]
     metadata = {
         "schema_version": "1.0",
         "dataset": "TomatoWUR-v3",
@@ -788,16 +372,24 @@ def preprocess_record(
         "source_hashes": source["source_hashes"],
         "point_to_original_index": original_indices.tolist(),
         "support_pole_point_count": int(len(support)),
-        "skeleton_quality_status": quality["status"],
-        "suspicious_raw_edge_count": quality.get(
-            "original_suspicious_edge_count", quality["suspicious_edge_count"]
-        ),
-        "remaining_suspicious_raw_edge_count": quality["suspicious_edge_count"],
-        "repaired_raw_edge_count": len(quality.get("repairs", [])),
+        "skeleton_source": "official_ground_truth",
+        "skeleton_annotation_version": source["annotation_version"],
+        "skeleton_modified": False,
+        "official_gt_node_ids": node_ids.tolist(),
+        "official_gt_parent_ids": official_parent_ids,
+        "official_gt_edge_types": [str(value) for value in raw["edge_type"]],
         "traits": {name: values.tolist() for name, values in raw["traits"].items()},
     }
     graph = graph_from_targets(
-        raw["plant_id"], node_xyz, parent, valid, organ, role, visibility, source=source
+        raw["plant_id"],
+        node_xyz,
+        parent,
+        valid,
+        organ,
+        role,
+        visibility,
+        edge_type,
+        source=source,
     )
     params = fit_parametric_targets(graph, xyz, semantic)
     sample = PlantSample(
@@ -823,22 +415,20 @@ def preprocess_record(
     stats = {
         "point_count": len(xyz),
         "raw_skeleton_nodes": len(raw["node_xyz"]),
-        "resampled_skeleton_nodes": pre_reduction_count,
         "cached_skeleton_nodes": int(valid.sum()),
-        "fixed_k_reduced": reduced,
         "support_pole_points": len(support),
-        "skeleton_quality_status": quality["status"],
-        "suspicious_raw_edge_count": quality.get(
-            "original_suspicious_edge_count", quality["suspicious_edge_count"]
-        ),
-        "remaining_suspicious_raw_edge_count": quality["suspicious_edge_count"],
-        "repaired_raw_edge_count": len(quality.get("repairs", [])),
-        "max_raw_edge_length_m": quality["max_edge_length_m"],
+        "skeleton_source": "official_ground_truth",
+        "skeleton_modified": False,
     }
-    return sample, stats, support, quality
+    return sample, stats, support
 
 
 def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
+    if str(cfg.get("skeleton_mode", "")) != "official_gt_direct":
+        raise ValueError(
+            "data.skeleton_mode must be 'official_gt_direct'; heuristic skeleton "
+            "repair, resampling, and reduction are no longer supported"
+        )
     splits = [str(value) for value in cfg.get("splits", [str(cfg.split)])]
     if not splits or len(splits) != len(set(splits)):
         raise ValueError("data.splits must contain one or more unique split names")
@@ -862,28 +452,14 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
     cfg_plain = OmegaConf.to_container(cfg, resolve=True)
     if not isinstance(cfg_plain, dict):
         raise TypeError("preprocessing configuration must be a mapping")
-    # Split orchestration does not alter a sample's preprocessing transforms.
-    # Excluding these new fields preserves the hash of the existing train cache.
+    # Split orchestration does not alter an individual sample's preprocessing
+    # transforms, so cache compatibility depends only on the transform settings.
     hash_config = dict(cfg_plain)
     hash_config.pop("splits", None)
     hash_config.pop("split_files", None)
     preprocessing_hash = canonical_hash(hash_config)
     manifest_samples = []
     warnings: list[str] = []
-    reduced_count = 0
-    quality_cfg = cfg.get("skeleton_quality", {})
-    quality_action = str(quality_cfg.get("action", "report"))
-    if quality_action not in {"report", "error", "exclude_flagged", "repair_flagged"}:
-        raise ValueError(
-            "skeleton_quality.action must be report, error, exclude_flagged, "
-            "or repair_flagged"
-        )
-    explicit_exclusions = {
-        str(value) for value in quality_cfg.get("exclude_plant_ids", [])
-    }
-    excluded_plant_ids: list[str] = []
-    review_plant_ids: list[str] = []
-    repaired_plant_ids: list[str] = []
     seen_plant_ids: set[str] = set()
     split_counts = {split: 0 for split in splits}
     for split, reader in readers.items():
@@ -901,37 +477,17 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
             source = {
                 "dataset": "TomatoWUR-v3",
                 "split": split,
+                "annotation_version": str(cfg.annotation_version),
                 "preprocessing_hash": preprocessing_hash,
                 "checkpoint_hashes": {},
                 "source_hashes": source_hashes,
             }
             raw = reader.load_record(record)
-            sample, stats, support, quality = preprocess_record(raw, cfg, source)
+            sample, stats, support = preprocess_record(raw, cfg, source)
             sample.metadata["split"] = split
-            quality["split"] = split
+            # Remove reports written by the retired heuristic repair pipeline.
             quality_path = samples_dir / f"{record.plant_id}.quality.json"
-            quality_path.write_text(
-                json.dumps(quality, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-            )
-            flagged = quality["status"] == "review"
-            if quality["status"] == "repaired":
-                repaired_plant_ids.append(record.plant_id)
-            if flagged:
-                review_plant_ids.append(record.plant_id)
-                warnings.append(
-                    f"{record.plant_id}: {quality['suspicious_edge_count']} "
-                    "suspicious raw skeleton edges"
-                )
-            if flagged and quality_action == "error":
-                raise ValueError(
-                    f"{record.plant_id}: skeleton quality review required; see {quality_path}"
-                )
-            excluded = record.plant_id in explicit_exclusions or (
-                flagged and quality_action == "exclude_flagged"
-            )
-            if excluded:
-                excluded_plant_ids.append(record.plant_id)
-                continue
+            quality_path.unlink(missing_ok=True)
             cache_name = f"{record.plant_id}.npz"
             cache_path = samples_dir / cache_name
             save_processed_sample(sample, cache_path)
@@ -948,7 +504,6 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
                     samples_dir / f"{record.plant_id}.context.npz",
                     support_pole_xyz=support,
                 )
-            reduced_count += int(stats["fixed_k_reduced"])
             split_counts[split] += 1
             manifest_samples.append(
                 {
@@ -956,16 +511,11 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
                     "cache_file": cache_name,
                     "split": split,
                     "cache_sha256": sha256_file(cache_path),
-                    "quality_file": quality_path.name,
                     "source_hashes": source_hashes,
                     **stats,
                 }
             )
     count = len(manifest_samples)
-    if count and reduced_count / count > 0.1:
-        warnings.append(
-            f"{reduced_count}/{count} plants required topology-preserving reduction; review max_nodes"
-        )
     manifest = {
         "schema_version": "1.0",
         "dataset": "TomatoWUR-v3",
@@ -986,14 +536,10 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
         },
         "sample_count": count,
         "source_sample_count": sum(len(reader) for reader in readers.values()),
-        "excluded_sample_count": len(excluded_plant_ids),
-        "excluded_plant_ids": excluded_plant_ids,
-        "skeleton_quality_review_count": len(review_plant_ids),
-        "skeleton_quality_review_plant_ids": review_plant_ids,
-        "skeleton_quality_repaired_count": len(repaired_plant_ids),
-        "skeleton_quality_repaired_plant_ids": repaired_plant_ids,
-        "fixed_k_reduction_count": reduced_count,
-        "fixed_k_reduction_rate": reduced_count / max(count, 1),
+        "skeleton_source": "official_ground_truth",
+        "skeleton_mode": "official_gt_direct",
+        "skeleton_annotation_version": str(cfg.annotation_version),
+        "skeleton_modified_count": 0,
         "warnings": warnings,
         "samples": manifest_samples,
     }

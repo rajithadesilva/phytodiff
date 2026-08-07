@@ -1,12 +1,12 @@
 dataset: TomatoWUR-v3
 raw_root: data/raw/TomatoWUR_v3
-processed_root: data/processed/v3_10mm_K256
-annotation_version: 0-paper-2Dto3D
+processed_root: data/processed/v3_gt_K256
+annotation_version: 0-paper-2Dto3D_improved
+skeleton_mode: official_gt_direct
 split: train
 splits: [train, val, test]
 split_file: null
 voxel_size_m: 0.001
-skeleton_spacing_m: 0.01
 max_nodes: 256
 num_points: 100000
 use_rgb: true
@@ -14,13 +14,3 @@ use_normals: true
 remove_support_pole: true
 visibility_distance_m: 0.01
 strict: true
-
-skeleton_quality:
-  enabled: true
-  max_edge_length_m: 0.08
-  sample_spacing_m: 0.005
-  support_distance_m: 0.015
-  min_support_ratio: 0.65
-  support_semantic_classes: [2, 4]
-  action: repair_flagged
-  exclude_plant_ids: []

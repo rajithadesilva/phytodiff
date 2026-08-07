@@ -19,6 +19,6 @@ visualize-stage1-test:
 	docker compose -f docker/docker-compose.yml run --rm train \
 		python scripts/visualize_encoder_predictions.py \
 		--checkpoint outputs/encoder/best.ckpt \
-		--processed-root data/processed/v3_10mm_K256 \
+		--processed-root data/processed/v3_gt_K256 \
 		--split test --count 0 \
 		--output outputs/encoder/test_visualizations

@@ -17,13 +17,15 @@ Point CSV fields are metric `x,y,z`, byte-range `blue,green,red`, and `nx,ny,nz`
 
 Raw semantic value 255 denotes an unlabeled point and is converted to the internal ignore index (-100). Such points remain available to geometry-based auxiliary targets but are excluded from semantic cross-entropy.
 
-## Skeleton quality control
+## Official ground-truth skeletons
 
-Stage 0 evaluates every raw parent edge before resampling or fixed-K reduction. It samples the edge in 3D and measures support from semantic main-stem and side-stem points. An edge is marked suspicious only when it is both longer than `skeleton_quality.max_edge_length_m` and has a support ratio below `skeleton_quality.min_support_ratio`.
+Stage 0 uses the corrected `0-paper-2Dto3D_improved` skeleton CSVs supplied with TomatoWUR v3. These are the paper's manually curated ground-truth skeletons after leaf-point removal and skeleton correction. Preprocessing does not rerun Xu skeletonisation and does not infer, remove, reconnect, resample, or reduce any annotated edge.
 
-Each source plant receives `samples/<plant_id>.quality.json`. The default `skeleton_quality.action=repair_flagged` removes every suspect parent edge and reconnects its child to the best short, supported candidate outside the child's subtree. This preserves one root, connectivity and acyclicity while retaining the plant. Raw annotations are never edited; reports retain the removed edge and replacement IDs, coordinates, lengths and support. Set `action=report` for diagnosis only, `action=error` to stop at the first suspect plant, or `action=exclude_flagged` to omit flagged plants. Explicit IDs in `skeleton_quality.exclude_plant_ids` are always excluded.
+Every official skeleton currently contains 114–251 valid nodes and therefore fits K=256. The raw node order, coordinates, parent indices, and edge types are copied into the valid slots after root translation; remaining slots are padding. If a future annotation contains more than K nodes, preprocessing stops and asks for a larger K rather than changing the GT.
 
-`scripts/visualize_dataset.py` renders X-Z, Y-Z, and X-Y views. Processed edges are red, unresolved suspicious edges are magenta, and repaired replacement edges are cyan. Highlighted edges are labelled with `parent_id→child_id`.
+The skeleton CSV is decoded with TomatoWUR's upstream convention: coordinate row number is the node index, while each row's `parentid,vid,edgetype` fields form an edge-list entry and need not describe that same coordinate row. The cache therefore assigns `parent_index[vid] = parentid` and maps `<` to same-axis continuation and `+` to side-axis attachment. Original node IDs, parent IDs, and edge types are retained in sample metadata.
+
+`scripts/visualize_dataset.py` renders X-Z, Y-Z, and X-Y views. Official GT parent edges are red.
 
 Split JSON entries must resolve point-cloud, label, and skeleton paths. Official key names `file_name`, `sem_seg_file_name`, and `skeleton_file_name` are supported, as are explicit aliases. Alternate files/views of one plant must stay in one plant-level split.
 
@@ -35,11 +37,10 @@ Split JSON entries must resolve point-cloud, label, and skeleton paths. Official
 2. Translate the skeleton root to the origin and store the exact inverse 4×4 transform.
 3. Remove semantic class 3 from plant learning and store support-pole points in a separate context NPZ.
 4. Voxel-downsample deterministically and retain original-point indices.
-5. Resample every skeleton edge at metric spacing while preserving original endpoints.
-6. If M>K, retain root/junction/tip nodes, allocate remaining samples along maximal chains by arc length, and reconnect each retained node to its nearest retained ancestor.
-7. Pad to K, derive normalized parent flow, organ type, topology role, and support-distance visibility.
-8. Fit stem/leaf parameter targets from graph chains and labelled scan support.
-9. Write plain versioned JSON/NPZ caches and a manifest with source/config/cache hashes, counts, truncation rate, label map, and warnings.
+5. Validate the official rooted tree and copy all GT nodes, parents, and edge types unchanged.
+6. Pad to K, derive normalized parent flow, organ type, topology role, and support-distance visibility.
+7. Fit stem/leaf parameter targets from graph chains and labelled scan support.
+8. Write plain versioned JSON/NPZ caches and a manifest with source/config/cache hashes, counts, label map, and warnings.
 
 Processed files contain the canonical tensor fields documented in [MODEL_CONTRACTS.md](MODEL_CONTRACTS.md). A cache is rejected when checkpoint preprocessing hash or K differs.
 
