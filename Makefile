@@ -1,5 +1,9 @@
 .PHONY: install test smoke docker-build preprocess visualize-stage1-test
 
+STAGE1_CHECKPOINT ?= outputs/encoder/best.ckpt
+STAGE1_PROCESSED_ROOT ?= data/processed/v3_gt_K256
+STAGE1_VIS_OUTPUT ?= outputs/encoder/test_visualizations
+
 install:
 	python -m pip install -e ".[dev]"
 
@@ -18,7 +22,7 @@ preprocess:
 visualize-stage1-test:
 	docker compose -f docker/docker-compose.yml run --rm train \
 		python scripts/visualize_encoder_predictions.py \
-		--checkpoint outputs/encoder/best.ckpt \
-		--processed-root data/processed/v3_gt_K256 \
+		--checkpoint $(STAGE1_CHECKPOINT) \
+		--processed-root $(STAGE1_PROCESSED_ROOT) \
 		--split test --count 0 \
-		--output outputs/encoder/test_visualizations
+		--output $(STAGE1_VIS_OUTPUT)
