@@ -13,6 +13,12 @@ from tomato_recon.train.common import load_checkpoint, save_checkpoint
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_stage1_registry_has_only_supported_models(self) -> None:
+        self.assertEqual(set(list_backbones()), {"pointnext", "sonata_ptv3", "kpconvx"})
+        for removed in ("ptv3", "litept"):
+            with self.assertRaisesRegex(ValueError, "unknown point backbone"):
+                ensure_backbone_available(removed)
+
     def test_pointnext_switch(self) -> None:
         cfg, _ = load_config("encoder", ["--config", "configs/smoke/all.yaml"])
         backbone = create_backbone(
@@ -55,4 +61,3 @@ class ConfigurationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

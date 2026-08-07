@@ -11,17 +11,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 FROM base AS builder
 WORKDIR /build
-COPY pyproject.toml requirements.lock ./
+COPY pyproject.toml requirements.lock requirements-stage1.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip wheel --wheel-dir=/wheelhouse -r requirements.lock \
+    && python -m pip wheel --wheel-dir=/wheelhouse \
+         --find-links=https://data.pyg.org/whl/torch-2.3.1+cu121.html \
+         --constraint=requirements.lock \
+         -r requirements-stage1.lock \
     && python -m pip wheel --wheel-dir=/wheelhouse usd-core==24.8
 
 FROM base AS runtime
 COPY --from=builder /wheelhouse /wheelhouse
-COPY requirements.lock /tmp/requirements.lock
+COPY requirements.lock requirements-stage1.lock /tmp/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-index --find-links=/wheelhouse -r /tmp/requirements.lock \
-    && rm -rf /wheelhouse /tmp/requirements.lock
+    && pip install --no-index --find-links=/wheelhouse -r /tmp/requirements-stage1.lock \
+    && rm -rf /wheelhouse /tmp/requirements.lock /tmp/requirements-stage1.lock
 WORKDIR /workspace
 COPY docker/entrypoint.sh /usr/local/bin/tomato-entrypoint
 RUN chmod +x /usr/local/bin/tomato-entrypoint
@@ -29,7 +34,8 @@ ENTRYPOINT ["tomato-entrypoint"]
 CMD ["python", "-c", "import tomato_recon; print(tomato_recon.__version__)"]
 
 FROM runtime AS dev
-RUN --mount=type=cache,target=/root/.cache/pip pip install pytest==8.3.2 pytest-cov==5.0.0
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install pytest==8.3.2 pytest-cov==5.0.0 ruff==0.6.4
 
 FROM runtime AS release
 COPY pyproject.toml README.md LICENSE ./

@@ -85,15 +85,24 @@ Expected: three root-centred, three-view point-cloud/skeleton previews. Inspect 
 
 ### 5. Train Stage 1: point encoder
 
-Prerequisite: verified caches. Select a backbone with `model.encoder.name=pointnext|ptv3|sonata_ptv3|litept`; optional adapters require their external packages/configuration.
+Prerequisite: verified caches. Stage 1 exposes `pointnext`, `sonata_ptv3` (default),
+and `kpconvx`. Prepare the pinned Sonata checkpoint once with
+`make prepare-stage1-models`.
 
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
-  python -m tomato_recon.train.train_encoder --config-name encoder model.encoder.name=pointnext
+  python -m tomato_recon.train.train_encoder --config-name encoder
 python -c "import torch; c=torch.load('outputs/encoder/best.ckpt', map_location='cpu', weights_only=False); print(c['stage'], c['metrics'])"
 ```
 
-Expected: `outputs/encoder/best.ckpt`, `outputs/encoder/last.ckpt`, resolved config, environment/git state, metrics, and a cached validation prediction. Every epoch trains only on the 35 training plants and evaluates all 4 validation plants without gradients. `best.ckpt` is selected by validation loss; test plants are never loaded by training.
+Expected: `outputs/encoder/best.ckpt`, `outputs/encoder/last.ckpt`, resolved config,
+environment/git state, metrics, and a cached validation prediction. `best.ckpt` is
+selected by the weighted validation overall score; test plants are never loaded by
+training.
+
+To train and compare all three encoders with live overall progress and complete test
+visualizations, run `make stage1-ablation`. Resume with
+`make stage1-ablation STAGE1_ABLATION_RESUME=--resume`.
 
 After model selection is frozen, render all five test plants once:
 

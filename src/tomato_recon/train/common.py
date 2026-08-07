@@ -178,7 +178,19 @@ def git_state() -> dict[str, Any]:
 
 def environment_info() -> dict[str, Any]:
     packages = {}
-    for name in ("torch", "numpy", "scipy", "omegaconf", "hydra-core", "networkx", "usd-core"):
+    for name in (
+        "torch",
+        "numpy",
+        "scipy",
+        "omegaconf",
+        "hydra-core",
+        "networkx",
+        "usd-core",
+        "spconv-cu121",
+        "torch-scatter",
+        "timm",
+        "huggingface-hub",
+    ):
         try:
             packages[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:

@@ -1,0 +1,17 @@
+stage: encoder
+model:
+  encoder:
+    name: kpconvx
+    pretrained: false
+    pretrained_checkpoint: null
+    grid_size: 0.005
+    shell_sizes: [1, 14, 28]
+    layer_blocks: [2, 2, 2, 8, 2]
+    init_channels: 32
+    channel_scaling: 1.41421356237
+    radius_scaling: 2.2
+    neighbor_limits: [12, 16, 20, 20, 20]
+    kernel_radius: 2.3
+    attention_groups: 8
+output:
+  dir: outputs/encoder_kpconvx

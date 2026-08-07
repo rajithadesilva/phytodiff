@@ -5,12 +5,13 @@ paths:
 
 model:
   encoder:
-    name: pointnext
-    pretrained: false
+    name: sonata_ptv3
+    pretrained: true
     input_dim: 6
     output_dim: 96
     global_dim: 128
     num_semantic_classes: 5
+    pretrained_checkpoint: data/pretrained/sonata/sonata.pth
     checkpoint: null
   diffusion:
     max_nodes: 256

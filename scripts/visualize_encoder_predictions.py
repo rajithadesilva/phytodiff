@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -16,9 +17,10 @@ from PIL import Image, ImageDraw
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import IGNORE_INDEX, EncoderOutput, PlantSample, TopologyRole
 from tomato_recon.data.tomatowur import ProcessedTomatoDataset
-from tomato_recon.models.encoders.base import PointEncoder, nearest_skeleton_targets
+from tomato_recon.evaluation.encoder import EncoderMetricAccumulator, encoder_metrics_for_sample
+from tomato_recon.models.encoders.base import PointEncoder, encoder_losses
 from tomato_recon.models.encoders.registry import create_backbone_from_config
-from tomato_recon.train.common import load_checkpoint
+from tomato_recon.train.common import checkpoint_sha256, load_checkpoint
 
 
 SEMANTIC_COLOURS = {
@@ -113,60 +115,13 @@ def encoder_metrics(
     skeleton_threshold_m: float,
     probability_threshold: float,
 ) -> dict[str, float]:
-    """Compute interpretable Stage 1 metrics for one unpadded plant."""
-    valid = sample.point_valid.to(output.point_xyz.device)[None]
-    semantic = sample.semantic.to(output.point_xyz.device)[None]
-    predicted_semantic = output.semantic_logits.argmax(dim=-1)
-    labelled = valid & (semantic != IGNORE_INDEX)
-    ious: list[float] = []
-    for semantic_class in range(output.semantic_logits.shape[-1]):
-        predicted_class = predicted_semantic == semantic_class
-        target_class = semantic == semantic_class
-        union = ((predicted_class | target_class) & labelled).sum()
-        if int(union):
-            intersection = ((predicted_class & target_class) & labelled).sum()
-            ious.append(float(intersection / union))
-
-    node_xyz = sample.node_xyz.to(output.point_xyz.device)[None]
-    node_valid = sample.node_valid.to(output.point_xyz.device)[None]
-    skeleton_target, offset_target = nearest_skeleton_targets(
-        output.point_xyz, node_xyz, node_valid, skeleton_threshold_m
+    """Compute canonical Stage 1 metrics for one unpadded plant."""
+    return encoder_metrics_for_sample(
+        sample,
+        output,
+        skeleton_threshold_m=skeleton_threshold_m,
+        probability_threshold=probability_threshold,
     )
-    skeleton_prediction = output.skeleton_logits.squeeze(-1).sigmoid() >= probability_threshold
-    skeleton_tp = (skeleton_prediction & skeleton_target & valid).sum()
-    skeleton_precision = skeleton_tp / (skeleton_prediction & valid).sum().clamp_min(1)
-    skeleton_recall = skeleton_tp / (skeleton_target & valid).sum().clamp_min(1)
-
-    topology_role = sample.topology_role.to(output.point_xyz.device)[None]
-    junction_nodes = node_valid & (topology_role == int(TopologyRole.JUNCTION))
-    if junction_nodes.any():
-        junction_distance = torch.cdist(output.point_xyz, node_xyz).masked_fill(
-            ~junction_nodes[:, None], torch.inf
-        )
-        junction_target = junction_distance.min(dim=-1).values <= 1.5 * skeleton_threshold_m
-    else:
-        junction_target = torch.zeros_like(valid)
-    junction_prediction = output.junction_logits.squeeze(-1).sigmoid() >= probability_threshold
-    junction_tp = (junction_prediction & junction_target & valid).sum()
-    junction_precision = junction_tp / (junction_prediction & valid).sum().clamp_min(1)
-    junction_recall = junction_tp / (junction_target & valid).sum().clamp_min(1)
-
-    offset_mask = skeleton_target & valid
-    offset_mae = (
-        (output.centreline_offset[offset_mask] - offset_target[offset_mask]).abs().mean()
-        if offset_mask.any()
-        else output.centreline_offset.new_zeros(())
-    )
-    return {
-        "semantic_miou": sum(ious) / max(len(ious), 1),
-        "skeleton_precision": float(skeleton_precision),
-        "skeleton_recall": float(skeleton_recall),
-        "centreline_offset_mae_m": float(offset_mae),
-        "junction_f1": float(
-            2 * junction_precision * junction_recall
-            / (junction_precision + junction_recall).clamp_min(1e-8)
-        ),
-    }
 
 
 def render_encoder_prediction(
@@ -199,7 +154,7 @@ def render_encoder_prediction(
     draw.text(
         (12, 31),
         f"semantic mIoU {metrics['semantic_miou']:.3f} | "
-        f"skeleton P/R {metrics['skeleton_precision']:.3f}/{metrics['skeleton_recall']:.3f} | "
+        f"skeleton F1 {metrics['skeleton_f1']:.3f} | "
         f"offset MAE {1000 * metrics['centreline_offset_mae_m']:.2f} mm | "
         f"junction F1 {metrics['junction_f1']:.3f}",
         fill=(55, 55, 55),
@@ -365,15 +320,6 @@ def _select_samples(
     return [dataset[index] for index in range(selected_count)]
 
 
-def _aggregate(metrics: list[dict[str, float]]) -> dict[str, float]:
-    if not metrics:
-        return {}
-    return {
-        key: sum(item[key] for item in metrics) / len(metrics)
-        for key in metrics[0]
-    }
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, default=Path("outputs/encoder/best.ckpt"))
@@ -432,6 +378,24 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
 
     per_plant: dict[str, dict[str, float]] = {}
+    accumulator = EncoderMetricAccumulator(
+        int(cfg.model.encoder.num_semantic_classes),
+        skeleton_threshold_m=args.skeleton_threshold_m,
+        probability_threshold=args.probability_threshold,
+    )
+    checkpoint_hash = checkpoint_sha256(args.checkpoint)
+    manifest_path = args.output / "visualization_manifest.json"
+    manifest: dict[str, Any] = {
+        "schema_version": "1.0",
+        "checkpoint": str(args.checkpoint),
+        "checkpoint_sha256": checkpoint_hash,
+        "split": split,
+        "expected_plant_ids": [sample.plant_id for sample in samples],
+        "renders": {},
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     with torch.inference_mode():
         for index, sample in enumerate(samples, start=1):
             if sample.metadata.get("preprocessing_hash") != checkpoint.get("preprocessing_hash"):
@@ -448,6 +412,16 @@ def main() -> None:
                 skeleton_threshold_m=args.skeleton_threshold_m,
                 probability_threshold=args.probability_threshold,
             )
+            losses = encoder_losses(
+                output,
+                batch.semantic,
+                batch.point_valid,
+                batch.node_xyz,
+                batch.node_valid,
+                batch.topology_role,
+                skeleton_threshold_m=args.skeleton_threshold_m,
+            )
+            accumulator.update(batch, output, losses)
             per_plant[sample.plant_id] = metrics
             output_path = args.output / f"{_safe_filename(sample.plant_id)}.png"
             render_encoder_prediction(
@@ -458,7 +432,29 @@ def main() -> None:
                 probability_threshold=args.probability_threshold,
                 max_render_points=args.max_render_points,
             )
+            manifest["renders"][sample.plant_id] = {
+                "path": str(output_path),
+                "status": "complete",
+            }
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
             print(f"[{index}/{len(samples)}] wrote {output_path}", flush=True)
+            if os.environ.get("STAGE1_ABLATION_EVENTS") == "1":
+                print(
+                    "@@STAGE1_EVENT@@"
+                    + json.dumps(
+                        {
+                            "phase": "visualize",
+                            "plant": index,
+                            "plant_total": len(samples),
+                            "plant_id": sample.plant_id,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
 
     report: dict[str, Any] = {
         "schema_version": "1.0",
@@ -469,7 +465,7 @@ def main() -> None:
         "sample_count": len(samples),
         "probability_threshold": args.probability_threshold,
         "skeleton_threshold_m": args.skeleton_threshold_m,
-        "aggregate": _aggregate(list(per_plant.values())),
+        "aggregate": accumulator.compute(),
         "per_plant": per_plant,
     }
     metrics_path = args.output / "metrics.json"

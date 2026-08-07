@@ -1,4 +1,5 @@
 /papers
+/data/pretrained/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

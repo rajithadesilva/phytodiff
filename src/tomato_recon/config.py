@@ -13,15 +13,14 @@ from omegaconf import DictConfig, OmegaConf
 
 
 STAGE_CONFIGS = {
-    "encoder": "encoder/pointnext.yaml",
+    "encoder": "encoder/sonata_ptv3.yaml",
     "pointnext": "encoder/pointnext.yaml",
-    "ptv3": "encoder/ptv3.yaml",
     "sonata_ptv3": "encoder/sonata_ptv3.yaml",
-    "litept": "encoder/litept.yaml",
+    "kpconvx": "encoder/kpconvx.yaml",
     "diffusion": "diffusion/default.yaml",
     "graph": "graph/default.yaml",
     "parametric": "parametric/default.yaml",
-    "joint": "experiment/tomatowur_pointnext_K256.yaml",
+    "joint": "experiment/tomatowur_stage1_K256.yaml",
     "infer": "infer.yaml",
     "smoke": "smoke/all.yaml",
 }

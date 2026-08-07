@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 from collections.abc import Callable
 from typing import Any
 
@@ -13,24 +12,13 @@ from tomato_recon.models.encoders.base import PointBackbone
 
 _REGISTRY: dict[str, tuple[str, str, str | None, str | None]] = {
     "pointnext": ("tomato_recon.models.encoders.pointnext", "PointNeXtAdapter", None, None),
-    "ptv3": (
-        "tomato_recon.models.encoders.ptv3",
-        "PTv3Adapter",
-        "pointcept",
-        "Install Pointcept and its CUDA point operators, then reinstall this package.",
-    ),
     "sonata_ptv3": (
         "tomato_recon.models.encoders.sonata",
         "SonataPTv3Adapter",
-        "pointcept",
-        "Install Pointcept/Sonata and provide an official compatible checkpoint.",
+        "sonata",
+        "Build the Docker training image and run `make prepare-stage1-models`.",
     ),
-    "litept": (
-        "tomato_recon.models.encoders.litept",
-        "LitePTAdapter",
-        "litept",
-        "Install the optional LitePT dependency before selecting model.encoder.name=litept.",
-    ),
+    "kpconvx": ("tomato_recon.models.encoders.kpconvx", "KPConvXAdapter", None, None),
 }
 
 
@@ -43,14 +31,24 @@ def register_backbone(name: str) -> Callable[[type[PointBackbone]], type[PointBa
 
 
 def list_backbones() -> dict[str, bool]:
-    return {name: dependency is None or importlib.util.find_spec(dependency) is not None for name, (*_, dependency, _) in _REGISTRY.items()}
+    return {name: _dependency_available(dependency) for name, (*_, dependency, _) in _REGISTRY.items()}
+
+
+def _dependency_available(dependency: str | None) -> bool:
+    if dependency is None:
+        return True
+    try:
+        importlib.import_module(dependency)
+    except (ImportError, OSError):
+        return False
+    return True
 
 
 def ensure_backbone_available(name: str) -> None:
     if name not in _REGISTRY:
         raise ValueError(f"unknown point backbone {name!r}; choose one of {sorted(_REGISTRY)}")
     _, _, dependency, hint = _REGISTRY[name]
-    if dependency is not None and importlib.util.find_spec(dependency) is None:
+    if not _dependency_available(dependency):
         raise ImportError(f"backbone {name!r} requires optional package {dependency!r}. {hint}")
 
 

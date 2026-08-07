@@ -1,7 +1,0 @@
-stage: encoder
-model:
-  encoder:
-    name: litept
-output:
-  dir: outputs/encoder_litept
-

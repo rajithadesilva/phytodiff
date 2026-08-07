@@ -36,15 +36,19 @@ class EncoderVisualizationTests(unittest.TestCase):
                 probability_threshold=0.5,
             )
 
-        self.assertEqual(
-            set(metrics),
+        self.assertTrue(
             {
                 "semantic_miou",
                 "skeleton_precision",
                 "skeleton_recall",
+                "skeleton_f1",
                 "centreline_offset_mae_m",
+                "centreline_offset_score",
+                "junction_precision",
+                "junction_recall",
                 "junction_f1",
-            },
+                "overall_score",
+            }.issubset(metrics)
         )
         self.assertTrue(all(math.isfinite(value) for value in metrics.values()))
 

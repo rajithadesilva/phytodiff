@@ -2,6 +2,7 @@ stage: encoder
 model:
   encoder:
     name: pointnext
+    pretrained: false
+    pretrained_checkpoint: null
 output:
   dir: outputs/encoder
-

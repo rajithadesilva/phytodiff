@@ -34,9 +34,10 @@ Every training stage reports epoch and batch progress, running component losses,
 
 ## 5. Train Stage 1 encoder
 
-- Prerequisite: verified caches and the chosen backbone dependency.
-- Command: `python -m tomato_recon.train.train_encoder --config-name encoder model.encoder.name=pointnext`.
-- Expected: `outputs/encoder/best.ckpt`, `last.ckpt`, metrics, run metadata, and `smoke_predictions.pt`. Training uses only the 35 `train` plants. After every epoch, all 4 `val` plants are evaluated without gradients; `best.ckpt` is selected by `val_loss`, while `last.ckpt` supports resuming the latest epoch.
+- Prerequisite: verified caches and `make prepare-stage1-models` for the default Sonata backbone.
+- Command: `python -m tomato_recon.train.train_encoder --config-name encoder`.
+- Supported encoders: `pointnext`, `sonata_ptv3`, and `kpconvx`.
+- Expected: `outputs/encoder/best.ckpt`, `last.ckpt`, metrics, run metadata, and `smoke_predictions.pt`. Training uses only `train`, validates on `val`, and selects `best.ckpt` by validation overall score.
 - Verify: inspect `val_semantic_miou`, validation skeleton precision/recall, centreline offset MAE, junction F1, and checkpoint stage/hash/K fields. The test split is not loaded during training or checkpoint selection.
 
 Visualise predictions from the trained Stage 1 checkpoint:
@@ -49,6 +50,9 @@ docker compose -f docker/docker-compose.yml run --rm train \
   --split test --count 3 \
   --output outputs/encoder/test_visualizations
 ```
+
+Run the complete three-model ablation, live global progress, held-out evaluation, and
+all test-plant visualizations with `make stage1-ablation`.
 
 Each plant PNG contains six front-view panels: input RGB, ground-truth semantics, predicted semantics, ground-truth skeleton, predicted skeleton probability with offset-corrected centreline points, and predicted junction probability. Cyan rings in the junction panel mark ground-truth junctions. The command defaults to `test` and writes `metrics.json` for the selected plants. Use `--plant-id PLANT_ID` (repeatable) to select exact plants, `--count 0` for all 5 test plants, or `--device cpu` to disable GPU inference. Run this only after model selection is complete.
 
