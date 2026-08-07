@@ -45,6 +45,7 @@ class SonataPTv3Adapter(PointBackbone):
 
         self.output_dim = output_dim
         self.global_dim = global_dim
+        self.input_dim = input_dim
         self.grid_size = float(grid_size)
         self.tune_mode = tune_mode
         custom_config = {
@@ -53,6 +54,16 @@ class SonataPTv3Adapter(PointBackbone):
             "freeze_encoder": tune_mode in {"freeze", "linear_probe"},
         }
         self.model = sonata.model.load(str(checkpoint), custom_config=custom_config)
+        # The official checkpoint was trained with Collect(feat_keys=("coord",
+        # "color", "normal")): three centred coordinate values followed by RGB
+        # and normals.  Keep the Stage 1 interface as RGB + normals, and add the
+        # official coordinate features below after applying Sonata's CenterShift.
+        self.expected_input_dim = int(self.model.embedding.in_channels)
+        if self.expected_input_dim not in {input_dim, input_dim + 3}:
+            raise ValueError(
+                "unsupported Sonata checkpoint input dimension "
+                f"{self.expected_input_dim}; expected {input_dim} or {input_dim + 3}"
+            )
         if tune_mode in {"freeze", "linear_probe"}:
             self.model.requires_grad_(False)
             self.model.eval()
@@ -101,11 +112,27 @@ class SonataPTv3Adapter(PointBackbone):
                 counts.append(0)
                 inverses.append(torch.empty(0, dtype=torch.long, device=xyz.device))
                 continue
-            pooled_xyz, pooled_features, grid, inverse = _voxel_pool(
-                xyz[batch_index, valid], features[batch_index, valid], self.grid_size
+            valid_xyz = xyz[batch_index, valid]
+            # Match Sonata's default CenterShift(apply_z=True) transform.  Besides
+            # making its coordinate feature compatible with the pretrained stem,
+            # this keeps grid coordinates non-negative after the per-cloud shift.
+            lower = valid_xyz.amin(dim=0)
+            upper = valid_xyz.amax(dim=0)
+            shift = torch.stack(
+                ((lower[0] + upper[0]) / 2, (lower[1] + upper[1]) / 2, lower[2])
             )
+            sonata_xyz = valid_xyz - shift
+            pooled_xyz, pooled_features, grid, inverse = _voxel_pool(
+                sonata_xyz, features[batch_index, valid], self.grid_size
+            )
+            # Sonata's GridSample subtracts the minimum grid coordinate before
+            # serialization; Morton/Hilbert encoding requires non-negative cells.
+            grid = grid - grid.amin(dim=0, keepdim=True)
             coordinates.append(pooled_xyz)
-            values.append(pooled_features)
+            if self.expected_input_dim == self.input_dim + 3:
+                values.append(torch.cat([pooled_xyz, pooled_features], dim=-1))
+            else:
+                values.append(pooled_features)
             grids.append(grid)
             inverses.append(inverse)
             counts.append(len(pooled_xyz))

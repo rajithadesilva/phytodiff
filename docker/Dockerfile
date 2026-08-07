@@ -1,10 +1,14 @@
 # syntax=docker/dockerfile:1.7
-ARG PYTORCH_IMAGE=pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+ARG PYTORCH_IMAGE=pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
 FROM ${PYTORCH_IMAGE} AS base
+# The PyTorch runtime image intentionally omits nvcc.  Tell cumm/spconv that
+# CUDA is nevertheless present so it passes its packaged tensorview headers to
+# NVRTC when Sonata's sparse convolutions compile their first kernel.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/workspace/src
+    PYTHONPATH=/workspace/src \
+    CUMM_CUDA_VERSION=12.1
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential git libgl1 libglib2.0-0 ninja-build \
     && rm -rf /var/lib/apt/lists/*

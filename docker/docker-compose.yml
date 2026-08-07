@@ -19,6 +19,7 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       CUBLAS_WORKSPACE_CONFIG: ":4096:8"
+      CUMM_CUDA_VERSION: "12.1"
     deploy:
       resources:
         reservations:
