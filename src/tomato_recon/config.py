@@ -13,7 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 
 
 STAGE_CONFIGS = {
-    "encoder": "encoder/sonata_ptv3.yaml",
+    "encoder": "encoder/kpconvx.yaml",
     "pointnext": "encoder/pointnext.yaml",
     "sonata_ptv3": "encoder/sonata_ptv3.yaml",
     "kpconvx": "encoder/kpconvx.yaml",

@@ -322,7 +322,9 @@ def _select_samples(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, default=Path("outputs/encoder/best.ckpt"))
+    parser.add_argument(
+        "--checkpoint", type=Path, default=Path("outputs/stage1_ablation/kpconvx/best.ckpt")
+    )
     parser.add_argument(
         "--processed-root",
         type=Path,
@@ -338,7 +340,9 @@ def main() -> None:
         "--plant-id", action="append", default=[], help="Render this plant ID (repeatable)"
     )
     parser.add_argument(
-        "--output", type=Path, default=Path("outputs/encoder/test_visualizations")
+        "--output",
+        type=Path,
+        default=Path("outputs/stage1_ablation/kpconvx/test_visualizations"),
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--probability-threshold", type=float, default=0.5)

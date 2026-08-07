@@ -5,14 +5,23 @@ paths:
 
 model:
   encoder:
-    name: sonata_ptv3
-    pretrained: true
+    name: kpconvx
+    pretrained: false
     input_dim: 6
     output_dim: 96
     global_dim: 128
     num_semantic_classes: 5
-    pretrained_checkpoint: data/pretrained/sonata/sonata.pth
-    checkpoint: null
+    pretrained_checkpoint: null
+    checkpoint: outputs/stage1_ablation/kpconvx/best.ckpt
+    grid_size: 0.005
+    shell_sizes: [1, 14, 28]
+    layer_blocks: [2, 2, 2, 8, 2]
+    init_channels: 32
+    channel_scaling: 1.41421356237
+    radius_scaling: 2.2
+    neighbor_limits: [12, 16, 20, 20, 20]
+    kernel_radius: 2.3
+    attention_groups: 8
   diffusion:
     max_nodes: 256
     hidden_dim: 128

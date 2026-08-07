@@ -13,6 +13,21 @@ from tomato_recon.train.common import load_checkpoint, save_checkpoint
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_kpconvx_is_the_default_stage1_encoder(self) -> None:
+        cfg, _ = load_config("encoder")
+        self.assertEqual(cfg.model.encoder.name, "kpconvx")
+        self.assertFalse(cfg.model.encoder.pretrained)
+        self.assertEqual(
+            cfg.model.encoder.checkpoint, "outputs/stage1_ablation/kpconvx/best.ckpt"
+        )
+
+        diffusion_cfg, _ = load_config("diffusion")
+        self.assertEqual(diffusion_cfg.model.encoder.name, "kpconvx")
+        self.assertEqual(
+            diffusion_cfg.model.encoder.checkpoint,
+            "outputs/stage1_ablation/kpconvx/best.ckpt",
+        )
+
     def test_stage1_registry_has_only_supported_models(self) -> None:
         self.assertEqual(set(list_backbones()), {"pointnext", "sonata_ptv3", "kpconvx"})
         for removed in ("ptv3", "litept"):

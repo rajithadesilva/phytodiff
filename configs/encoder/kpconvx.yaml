@@ -14,4 +14,4 @@ model:
     kernel_radius: 2.3
     attention_groups: 8
 output:
-  dir: outputs/encoder_kpconvx
+  dir: outputs/encoder

@@ -1,7 +1,7 @@
 stage: diffusion
 model:
   encoder:
-    checkpoint: outputs/encoder/best.ckpt
+    checkpoint: outputs/stage1_ablation/kpconvx/best.ckpt
   diffusion:
     checkpoint: null
 loss:

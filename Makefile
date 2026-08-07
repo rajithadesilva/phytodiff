@@ -1,8 +1,8 @@
 .PHONY: install test smoke docker-build preprocess prepare-stage1-models stage1-ablation visualize-stage1-test
 
-STAGE1_CHECKPOINT ?= outputs/encoder/best.ckpt
+STAGE1_CHECKPOINT ?= outputs/stage1_ablation/kpconvx/best.ckpt
 STAGE1_PROCESSED_ROOT ?= data/processed/v3_gt_K256
-STAGE1_VIS_OUTPUT ?= outputs/encoder/test_visualizations
+STAGE1_VIS_OUTPUT ?= outputs/stage1_ablation/kpconvx/test_visualizations
 STAGE1_ABLATION_OUTPUT ?= outputs/stage1_ablation
 STAGE1_EPOCHS ?= 50
 STAGE1_ABLATION_RESUME ?=
