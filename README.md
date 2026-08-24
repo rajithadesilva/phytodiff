@@ -54,8 +54,8 @@ Expected: the cached multi-stage image builds and the check prints `True` for CU
 Prerequisite: access to [TomatoWUR v3](https://data.4tu.nl/datasets/e2c59841-4653-45de-a75e-4994b2766a2f/3) and acceptance of its terms.
 
 ```bash
-test -d data/raw/TomatoWUR_v3/point_clouds
-test -d data/raw/TomatoWUR_v3/ann_versions
+test -d data/TomatoWUR/point_clouds
+test -d data/TomatoWUR/ann_versions
 ```
 
 Expected: the external dataset has `point_clouds/`, `ann_versions/`, `images/`, and `camera_poses/`. Verify that `configs/data/tomatowur_v3.yaml` points at that mount. The code never opens an interactive downloader.
@@ -67,17 +67,17 @@ Prerequisite: Step 2 and plant-level split JSONs.
 ```bash
 docker compose -f docker/docker-compose.yml run --rm preprocess \
   python scripts/prepare_tomatowur.py --config configs/data/tomatowur_v3.yaml
-python -c "import json; m=json.load(open('data/processed/v3_gt_K256/manifest.json')); print(m['sample_count'], m['split_counts'], m['skeleton_annotation_version'], m['skeleton_modified_count'], m['warnings'])"
+python -c "import json; m=json.load(open('data/dataset/manifest.json')); print(m['datasets']['tomatowur'], m['next_plant_number'])"
 ```
 
-Expected: `manifest.json` and versioned `.npz`, `.graph.json`, and `.params.json` caches for all 44 plants. Verify the official plant-level counts are 35 train, 4 validation, and 5 test. Stage 0 reads `0-paper-2Dto3D_improved` and preserves every official GT node and parent edge exactly; it only translates coordinates to the root-centred frame and pads to K=256. It fails instead of modifying a skeleton if K is too small.
+Expected: live progress shows split discovery and the checking, processing, writing, completion, or skip status of every point-cloud instance. `manifest.json` and one globally numbered `plant_<number>/` cache directory per point cloud contain versioned `.npz`, `.graph.json`, and `.params.json` files. TomatoWUR contributes 44 instances when the dataset is initially empty. Existing source instances are skipped on reruns; new instances continue after the highest plant number already present. Verify the official plant-level counts are 35 train, 4 validation, and 5 test. Stage 0 reads `0-paper-2Dto3D_improved` and preserves every official GT node and parent edge exactly; it only translates coordinates to the root-centred frame and pads to K=256.
 
 ### 4. Visualise at least three processed plants
 
 Prerequisite: at least three Stage 0 samples.
 
 ```bash
-python scripts/visualize_dataset.py data/processed/v3_gt_K256 --count 3 --output outputs/dataset_preview
+python scripts/visualize_dataset.py data/dataset --count 3 --output outputs/dataset_preview
 test "$(find outputs/dataset_preview -name '*.png' | wc -l)" -ge 3
 ```
 
@@ -199,7 +199,7 @@ Expected: `outputs/joint/best.ckpt` containing the combined model and exact upst
 Prerequisite: a frozen experiment config and test predictions; do not tune on this output.
 
 ```bash
-python -m tomato_recon.evaluate --processed-root data/processed/v3_gt_K256 \
+python -m tomato_recon.evaluate --processed-root data/dataset \
   --predictions outputs/inference --output outputs/evaluation/metrics.json
 python -c "import json; m=json.load(open('outputs/evaluation/metrics.json')); print(m['primary_metric_groups'], m['aggregate'])"
 ```
@@ -212,10 +212,10 @@ Prerequisite: Stage 5 checkpoint and a processed `.npz` (or isolated TomatoWUR-s
 
 ```bash
 python -m tomato_recon.infer --config-name infer \
-  input.path=data/processed/v3_gt_K256/samples/PLANT_ID.npz \
+  input.path=data/dataset/plant_000001/sample.npz \
   model.pipeline_checkpoint=outputs/joint/best.ckpt \
-  inference.num_diffusion_samples=4 output.dir=outputs/inference/PLANT_ID
-test -f outputs/inference/PLANT_ID/plant_graph.json && test -f outputs/inference/PLANT_ID/plant.usd
+  inference.num_diffusion_samples=4 output.dir=outputs/inference/plant_000001
+test -f outputs/inference/plant_000001/plant_graph.json && test -f outputs/inference/plant_000001/plant.usd
 ```
 
 Expected: the complete output contract described below, with no ground-truth node count used during inference.
@@ -267,10 +267,18 @@ See [data documentation](docs/DATA.md), [training details](docs/TRAINING.md), [m
 
 ## Tests
 
+Use the development image, which includes the pinned runtime dependencies and
+test tools:
+
 ```bash
+docker compose -f docker/docker-compose.yml run --rm train python -m pytest
+```
+
+For a local Python 3.11 environment, install the development extra first:
+
+```bash
+python -m pip install -e ".[dev]"
 python -m pytest
-# Standard-library fallback when pytest is not installed:
-python -m unittest discover -s tests -v
 ```
 
 The suite covers data mapping/round trips/fixed-K reduction/hashes; spline, frames, stem, leaf, and fruit meshes; diffusion noising/loss/reverse sampling/pruning/determinism; candidate edges/constraints/arborescence; configuration/checkpoint compatibility; all five training scripts and resume; preprocessing-to-inference integration; and USD hierarchy/units/mesh metadata/reopen validation.

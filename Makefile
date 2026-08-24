@@ -1,7 +1,7 @@
 .PHONY: install test smoke docker-build preprocess prepare-stage1-models stage1-ablation visualize-stage1-test
 
 STAGE1_CHECKPOINT ?= outputs/stage1_ablation/kpconvx/best.ckpt
-STAGE1_PROCESSED_ROOT ?= data/processed/v3_gt_K256
+STAGE1_PROCESSED_ROOT ?= data/dataset
 STAGE1_VIS_OUTPUT ?= outputs/stage1_ablation/kpconvx/test_visualizations
 STAGE1_ABLATION_OUTPUT ?= outputs/stage1_ablation
 STAGE1_EPOCHS ?= 50
@@ -29,7 +29,7 @@ prepare-stage1-models:
 stage1-ablation:
 	docker compose -f docker/docker-compose.yml run --rm train \
 		python -u scripts/run_stage1_ablation.py \
-		--processed-root data/processed/v3_gt_K256 \
+		--processed-root $(STAGE1_PROCESSED_ROOT) \
 		--output $(STAGE1_ABLATION_OUTPUT) \
 		--max-epochs $(STAGE1_EPOCHS) $(STAGE1_ABLATION_RESUME)
 

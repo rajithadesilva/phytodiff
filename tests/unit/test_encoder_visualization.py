@@ -10,7 +10,7 @@ from PIL import Image
 
 from scripts.visualize_encoder_predictions import encoder_metrics, render_encoder_prediction
 from tomato_recon.data.collate import collate_plant_samples
-from tomato_recon.data.tomatowur import make_tiny_sample
+from tomato_recon.data.processed import make_tiny_sample
 from tomato_recon.models.encoders.base import PointEncoder
 from tomato_recon.models.encoders.pointnext import PointNeXtAdapter
 

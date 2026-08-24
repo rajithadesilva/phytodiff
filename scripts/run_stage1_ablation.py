@@ -17,7 +17,7 @@ from typing import Any, Callable
 import torch
 from PIL import Image, ImageDraw
 
-from tomato_recon.data.tomatowur import ProcessedTomatoDataset
+from tomato_recon.data.processed import ProcessedPlantDataset
 from tomato_recon.models.encoders.registry import ensure_backbone_available
 from tomato_recon.models.pretrained import verify_sonata_checkpoint
 
@@ -267,7 +267,7 @@ def _write_comparison(output: Path, results: dict[str, dict[str, Any]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--processed-root", type=Path, default=Path("data/processed/v3_gt_K256"))
+    parser.add_argument("--processed-root", type=Path, default=Path("data/dataset"))
     parser.add_argument("--output", type=Path, default=Path("outputs/stage1_ablation"))
     parser.add_argument("--max-epochs", type=int, default=50)
     parser.add_argument("--resume", action="store_true")
@@ -279,8 +279,8 @@ def main() -> None:
         raise FileNotFoundError(
             f"processed dataset missing at {args.processed_root}; run preprocessing first"
         )
-    validation_dataset = ProcessedTomatoDataset(args.processed_root, split="val")
-    test_dataset = ProcessedTomatoDataset(args.processed_root, split="test")
+    validation_dataset = ProcessedPlantDataset(args.processed_root, split="val")
+    test_dataset = ProcessedPlantDataset(args.processed_root, split="test")
     if not len(validation_dataset) or not len(test_dataset):
         raise ValueError("Stage 1 ablation requires non-empty val and test splits")
     if not torch.cuda.is_available() and not args.allow_cpu:

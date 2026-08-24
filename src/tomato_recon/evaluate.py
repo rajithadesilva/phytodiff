@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 
 from tomato_recon.data.schemas import PlantGraph
-from tomato_recon.data.tomatowur import ProcessedTomatoDataset
+from tomato_recon.data.processed import ProcessedPlantDataset
 from tomato_recon.evaluation.graph_metrics import graph_metrics
 from tomato_recon.evaluation.geometry_metrics import geometry_metrics
 from tomato_recon.evaluation.skeleton_metrics import skeleton_metrics
@@ -58,7 +58,7 @@ def graph_traits(graph: PlantGraph) -> dict[str, float]:
 
 
 def evaluate_directory(processed_root: Path, predictions: Path) -> dict:
-    dataset = ProcessedTomatoDataset(processed_root)
+    dataset = ProcessedPlantDataset(processed_root)
     per_sample = {}
     for sample in dataset:
         graph_path = predictions / sample.plant_id / "plant_graph.json"

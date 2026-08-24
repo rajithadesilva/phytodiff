@@ -52,7 +52,7 @@ model:
 
 fruit:
   enabled: true
-  pseudo_labels_dir: ${data.processed_root}/fruit_pseudo
+  pseudo_labels_dir: outputs/fruit_pseudo
   min_confidence: 0.70
   loss_weight: 0.20
   include_in_primary_metrics: false

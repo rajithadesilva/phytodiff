@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 
 from tomato_recon.config import load_config
-from tomato_recon.data.tomatowur import make_tiny_sample
+from tomato_recon.data.processed import make_tiny_sample
 from tomato_recon.models.encoders.registry import create_backbone, ensure_backbone_available, list_backbones
 from tomato_recon.train.common import load_checkpoint, save_checkpoint
 

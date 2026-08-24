@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from tomato_recon.config import save_resolved_config
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import PlantBatch, PlantSample
-from tomato_recon.data.tomatowur import ProcessedTomatoDataset, make_tiny_sample
+from tomato_recon.data.processed import ProcessedPlantDataset, make_tiny_sample
 
 
 class TrainingProgress:
@@ -98,7 +98,7 @@ def select_device(cfg: DictConfig) -> torch.device:
 def load_training_sample(cfg: DictConfig) -> PlantSample:
     manifest = Path(cfg.data.processed_root) / "manifest.json"
     if manifest.is_file():
-        dataset = ProcessedTomatoDataset(cfg.data.processed_root, split=str(cfg.data.split))
+        dataset = ProcessedPlantDataset(cfg.data.processed_root, split=str(cfg.data.split))
         if not len(dataset):
             raise ValueError(f"processed split {cfg.data.split!r} contains no samples")
         return dataset[0]
@@ -118,7 +118,7 @@ def create_split_loader(
 ) -> DataLoader | list[PlantBatch]:
     manifest = Path(cfg.data.processed_root) / "manifest.json"
     if manifest.is_file():
-        dataset = ProcessedTomatoDataset(cfg.data.processed_root, split=split)
+        dataset = ProcessedPlantDataset(cfg.data.processed_root, split=split)
         if not len(dataset):
             raise ValueError(
                 f"processed split {split!r} contains no samples at {cfg.data.processed_root}"

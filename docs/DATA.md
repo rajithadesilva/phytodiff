@@ -3,7 +3,7 @@
 TomatoWUR is an external mount. Training and preprocessing never prompt for a download. The supported public v3 layout is:
 
 ```text
-TomatoWUR_v3/
+TomatoWUR/
   point_clouds/<plant_id>.csv
   ann_versions/<annotation_version>/
     annotations/<plant_id>/<plant_id>_labels.csv
@@ -12,6 +12,36 @@ TomatoWUR_v3/
   images/
   camera_poses/
 ```
+
+The raw layout is read in place and is never reorganized. Processed data uses a shared,
+dataset-agnostic collection rooted at `data/dataset`:
+
+```text
+data/dataset/
+  manifest.json
+  plant_000001/
+    sample.npz
+    sample.graph.json
+    sample.params.json
+    context.npz              # only when support context exists
+  plant_000002/
+    ...
+```
+
+One point cloud is one processed plant instance. Its globally unique `instance_id` and
+`plant_id` are both the numbered folder name. `source_instance_id`, `dataset`, and
+`source_plant_id` retain the source scan, source dataset, and biological plant identities.
+This lets a time-series dataset store multiple scan instances for one biological plant
+without putting source-specific directories in `data/dataset` or causing output collisions.
+Biological source-plant splitting is enforced: two instances of one source plant cannot
+cross train, validation, and test splits. `plant_count` counts the globally unique processed
+plant instances; `source_plant_count` separately counts their biological source plants.
+
+Before allocating a new folder, preprocessing scans both the root manifest and all existing
+`plant_<number>` directories. It continues at the highest number plus one regardless of
+which source dataset was processed first. A manifest reservation is written before each
+point cloud is converted, so an interrupted run reuses its assigned folder. Completed
+source instances with unchanged inputs and configuration are skipped on reruns.
 
 Point CSV fields are metric `x,y,z`, byte-range `blue,green,red`, and `nx,ny,nz`. The loader converts BGR to canonical RGB `[0,1]`. Annotation aliases are accepted for semantic and instance columns; official semantics are background 0, leaf 1, main stem 2, support pole 3, and side stem 4. Skeleton CSV fields are `x_skeleton,y_skeleton,z_skeleton,vid,parentid,edgetype`; optional measured traits are `gt_int_length`, `gt_int_diameter`, `gt_ph_angle`, and `gt_lf_angle`. Missing traits remain NaN/masked.
 
@@ -40,8 +70,8 @@ Split JSON entries must resolve point-cloud, label, and skeleton paths. Official
 5. Validate the official rooted tree and copy all GT nodes, parents, and edge types unchanged.
 6. Pad to K, derive normalized parent flow, organ type, topology role, and support-distance visibility.
 7. Fit stem/leaf parameter targets from graph chains and labelled scan support.
-8. Write plain versioned JSON/NPZ caches and a manifest with source/config/cache hashes, counts, label map, and warnings.
+8. Reserve the next global plant number, then write one versioned JSON/NPZ cache directory per point-cloud instance and update the shared manifest.
 
 Processed files contain the canonical tensor fields documented in [MODEL_CONTRACTS.md](MODEL_CONTRACTS.md). A cache is rejected when checkpoint preprocessing hash or K differs.
 
-Fruit proposals belong under `<processed_root>/fruit_pseudo/`. The included script writes the explicit pseudo-label cache contract but intentionally fabricates no fruit supervision. An external offline detector may populate `points` and `confidence`; predictions below `fruit.min_confidence` are excluded, and fruit never enters primary metrics.
+Fruit proposals for an instance belong in its numbered folder as `fruit_pseudo.npz`; no auxiliary directory is created at the dataset root. The included script writes the external detector contract under `outputs/fruit_pseudo` but intentionally fabricates no fruit supervision. Predictions below `fruit.min_confidence` are excluded, and fruit never enters primary metrics.

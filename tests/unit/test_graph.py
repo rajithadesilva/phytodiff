@@ -6,7 +6,7 @@ import networkx as nx
 import torch
 
 from tomato_recon.data.schemas import SkeletonPrediction
-from tomato_recon.data.tomatowur import make_tiny_sample
+from tomato_recon.data.processed import make_tiny_sample
 from tomato_recon.models.graph.constraints import transition_allowed
 from tomato_recon.models.graph.decode import decode_plant_graph
 from tomato_recon.models.graph.edge_head import GraphScores, candidate_parent_mask
@@ -63,4 +63,3 @@ class GraphTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

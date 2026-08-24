@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from omegaconf import OmegaConf
 
-from tomato_recon.data.tomatowur import ProcessedTomatoDataset
+from tomato_recon.data.processed import ProcessedPlantDataset
 from tomato_recon.evaluation.encoder import evaluate_encoder_model
 from tomato_recon.models.encoders.base import PointEncoder
 from tomato_recon.models.encoders.registry import create_backbone_from_config
@@ -34,7 +34,7 @@ def main() -> None:
     cfg.trainer.batch_size = 1
     cfg.trainer.num_workers = 0
     cfg.trainer.fast_dev_run = False
-    dataset = ProcessedTomatoDataset(args.processed_root, split=args.split)
+    dataset = ProcessedPlantDataset(args.processed_root, split=args.split)
     if not len(dataset):
         raise ValueError(f"split {args.split!r} is empty at {args.processed_root}")
     first = dataset[0]

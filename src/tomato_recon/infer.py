@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 from tomato_recon.config import load_config
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import IGNORE_INDEX, OrganType, PlantSample, TopologyRole, Visibility
-from tomato_recon.data.tomatowur import load_processed_sample
+from tomato_recon.data.processed import load_processed_sample
 from tomato_recon.export.ply import write_mesh_ply, write_point_ply
 from tomato_recon.export.usd_exporter import USDPlantExporter
 from tomato_recon.models.pipeline import PipelineResult, TomatoReconstructionPipeline

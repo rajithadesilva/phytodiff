@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from tomato_recon.data.tomatowur import make_tiny_sample
+from tomato_recon.data.processed import make_tiny_sample
 from tomato_recon.export.usd_exporter import USDPlantExporter, validate_usd_static
 from tomato_recon.models.parametric.decoder import ParametricDecoder
 from tomato_recon.models.parametric.primitives import generate_plant_geometry
@@ -39,4 +39,3 @@ class USDTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

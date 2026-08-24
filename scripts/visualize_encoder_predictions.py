@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw
 
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import IGNORE_INDEX, EncoderOutput, PlantSample, TopologyRole
-from tomato_recon.data.tomatowur import ProcessedTomatoDataset
+from tomato_recon.data.processed import ProcessedPlantDataset
 from tomato_recon.evaluation.encoder import EncoderMetricAccumulator, encoder_metrics_for_sample
 from tomato_recon.models.encoders.base import PointEncoder, encoder_losses
 from tomato_recon.models.encoders.registry import create_backbone_from_config
@@ -304,7 +304,7 @@ def render_encoder_prediction(
 
 
 def _select_samples(
-    dataset: ProcessedTomatoDataset, count: int, plant_ids: list[str]
+    dataset: ProcessedPlantDataset, count: int, plant_ids: list[str]
 ) -> list[PlantSample]:
     if plant_ids:
         requested = set(plant_ids)
@@ -363,7 +363,7 @@ def main() -> None:
     cfg = OmegaConf.create(raw_checkpoint["config"])
     processed_root = args.processed_root or Path(str(cfg.data.processed_root))
     split = str(args.split)
-    dataset = ProcessedTomatoDataset(processed_root, split=split)
+    dataset = ProcessedPlantDataset(processed_root, split=split)
     if not len(dataset):
         raise ValueError(f"processed split {split!r} contains no samples at {processed_root}")
     samples = _select_samples(dataset, args.count, args.plant_id)

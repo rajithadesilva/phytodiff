@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -26,7 +27,26 @@ from tomato_recon.data.schemas import (
     TopologyRole,
     Visibility,
 )
-from tomato_recon.data.tomatowur import TomatoWURReader, save_processed_sample
+from tomato_recon.data.processed import (
+    load_processed_dataset_manifest,
+    next_plant_number,
+    plant_instance_id,
+    processed_dataset_identity,
+    resolve_processed_dataset_root,
+    save_processed_sample,
+    write_processed_dataset_manifest,
+)
+from tomato_recon.data.tomatowur import TomatoWURReader
+
+
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _emit_progress(
+    callback: ProgressCallback | None, phase: str, **details: Any
+) -> None:
+    if callback is not None:
+        callback({"phase": phase, **details})
 
 
 def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
@@ -292,7 +312,9 @@ def fit_parametric_targets(
             matching = semantic == int(SemanticClass.SIDE_STEM)
         else:
             matching = semantic == int(SemanticClass.LEAF)
-        radius = float(np.clip(np.median(distances[matching]) if matching.any() else 0.003, 0.001, 0.02))
+        radius = float(
+            np.clip(np.median(distances[matching]) if matching.any() else 0.003, 0.001, 0.02)
+        )
         length = float(torch.linalg.vector_norm(control[1:] - control[:-1], dim=-1).sum())
         confidence = min(node_by_id[node_id].existence_confidence for node_id in chain)
         organs.append(
@@ -365,7 +387,13 @@ def preprocess_record(
     ]
     metadata = {
         "schema_version": "1.0",
-        "dataset": "TomatoWUR-v3",
+        "instance_id": raw["instance_id"],
+        "plant_id": raw["plant_id"],
+        "source_instance_id": raw["source_instance_id"],
+        "source_plant_id": raw["source_plant_id"],
+        "dataset": source["dataset"],
+        "dataset_name": source["dataset_name"],
+        "dataset_version": source["dataset_version"],
         "cultivar": raw.get("genotype"),
         "normalised_to_original": transform.tolist(),
         "preprocessing_hash": source["preprocessing_hash"],
@@ -423,7 +451,11 @@ def preprocess_record(
     return sample, stats, support
 
 
-def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
+def preprocess_dataset(
+    cfg: DictConfig, *, progress: ProgressCallback | None = None
+) -> dict[str, Any]:
+    dataset_identity = processed_dataset_identity(cfg)
+    output_root = resolve_processed_dataset_root(cfg)
     if str(cfg.get("skeleton_mode", "")) != "official_gt_direct":
         raise ValueError(
             "data.skeleton_mode must be 'official_gt_direct'; heuristic skeleton "
@@ -434,6 +466,14 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
         raise ValueError("data.splits must contain one or more unique split names")
     if str(cfg.split) not in splits:
         raise ValueError("data.split must be included in data.splits")
+    _emit_progress(
+        progress,
+        "loading_splits",
+        dataset=dataset_identity["dataset"],
+        raw_root=str(cfg.raw_root),
+        output_root=str(output_root),
+        splits=splits,
+    )
     configured_split_files = cfg.get("split_files", {})
     readers: dict[str, TomatoWURReader] = {}
     for split in splits:
@@ -446,9 +486,15 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
             split=split,
             split_file=split_file,
         )
-    output_root = Path(cfg.processed_root)
-    samples_dir = output_root / "samples"
-    samples_dir.mkdir(parents=True, exist_ok=True)
+    total_instances = sum(len(reader) for reader in readers.values())
+    _emit_progress(
+        progress,
+        "discovered",
+        total=total_instances,
+        split_counts={split: len(reader) for split, reader in readers.items()},
+    )
+    output_root.mkdir(parents=True, exist_ok=True)
+    dataset_manifest = load_processed_dataset_manifest(output_root)
     cfg_plain = OmegaConf.to_container(cfg, resolve=True)
     if not isinstance(cfg_plain, dict):
         raise TypeError("preprocessing configuration must be a mapping")
@@ -458,24 +504,162 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
     hash_config.pop("splits", None)
     hash_config.pop("split_files", None)
     preprocessing_hash = canonical_hash(hash_config)
-    manifest_samples = []
+    dataset_manifest["datasets"][dataset_identity["dataset"]] = {
+        **dataset_identity,
+        "preprocessing_config": cfg_plain,
+        "preprocessing_hash": preprocessing_hash,
+        "label_map": {
+            "0": "background",
+            "1": "leaf",
+            "2": "main_stem",
+            "3": "support_pole",
+            "4": "side_stem",
+        },
+        "split_files": {split: str(reader.split_file) for split, reader in readers.items()},
+        "skeleton_source": "official_ground_truth",
+        "skeleton_mode": "official_gt_direct",
+        "skeleton_annotation_version": str(cfg.annotation_version),
+    }
+    source_index: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in dataset_manifest["instances"]:
+        key = (str(entry.get("dataset", "")), str(entry.get("source_instance_id", "")))
+        if key in source_index:
+            raise ValueError(f"duplicate source instance in processed manifest: {key}")
+        source_index[key] = entry
+    next_number = next_plant_number(output_root, dataset_manifest)
+    manifest_instances = []
     warnings: list[str] = []
-    seen_plant_ids: set[str] = set()
+    seen_instance_ids: set[str] = set()
+    seen_point_clouds: set[Path] = set()
+    plant_splits = {
+        str(entry["source_plant_id"]): str(entry["split"])
+        for entry in dataset_manifest["instances"]
+        if entry.get("dataset") == dataset_identity["dataset"]
+        and entry.get("source_plant_id")
+    }
+    current_plant_ids: set[str] = set()
     split_counts = {split: 0 for split in splits}
+    new_instance_count = 0
+    resumed_instance_count = 0
+    skipped_instance_count = 0
+    current_index = 0
     for split, reader in readers.items():
         for record in reader:
-            if record.plant_id in seen_plant_ids:
+            current_index += 1
+            started_at = time.perf_counter()
+            progress_details = {
+                "current": current_index,
+                "total": total_instances,
+                "split": split,
+                "source_instance_id": record.instance_id,
+            }
+            _emit_progress(progress, "checking", **progress_details)
+            if record.instance_id in seen_instance_ids:
                 raise ValueError(
-                    f"plant ID {record.plant_id!r} occurs in more than one configured split"
+                    f"instance ID {record.instance_id!r} occurs more than once in the "
+                    "configured splits"
                 )
-            seen_plant_ids.add(record.plant_id)
+            point_cloud_path = record.point_cloud_path.resolve()
+            if point_cloud_path in seen_point_clouds:
+                raise ValueError(
+                    f"point cloud {point_cloud_path} is assigned to more than one instance"
+                )
+            previous_split = plant_splits.get(record.plant_id)
+            if previous_split is not None and previous_split != split:
+                raise ValueError(
+                    f"plant ID {record.plant_id!r} has point-cloud instances in both "
+                    f"{previous_split!r} and {split!r}; split plants rather than scans"
+                )
+            seen_instance_ids.add(record.instance_id)
+            seen_point_clouds.add(point_cloud_path)
+            plant_splits[record.plant_id] = split
+            current_plant_ids.add(record.plant_id)
             source_hashes = {
                 "point_cloud": sha256_file(record.point_cloud_path),
                 "labels": sha256_file(record.labels_path),
                 "skeleton": sha256_file(record.skeleton_path),
             }
+            source_key = (dataset_identity["dataset"], record.instance_id)
+            manifest_entry = source_index.get(source_key)
+            existing_instance = manifest_entry is not None
+            if manifest_entry is None:
+                global_instance_id = plant_instance_id(next_number)
+                next_number += 1
+                cache_relative = Path(global_instance_id) / "sample.npz"
+                manifest_entry = {
+                    **dataset_identity,
+                    "instance_id": global_instance_id,
+                    "plant_number": int(global_instance_id.removeprefix("plant_")),
+                    "source_instance_id": record.instance_id,
+                    "plant_id": global_instance_id,
+                    "source_plant_id": record.plant_id,
+                    "point_cloud_id": record.point_cloud_path.stem,
+                    "cache_file": cache_relative.as_posix(),
+                    "split": split,
+                    "preprocessing_hash": preprocessing_hash,
+                    "source_hashes": source_hashes,
+                    "status": "processing",
+                }
+                dataset_manifest["instances"].append(manifest_entry)
+                source_index[source_key] = manifest_entry
+                new_instance_count += 1
+            else:
+                global_instance_id = str(manifest_entry["instance_id"])
+                cache_relative = Path(str(manifest_entry["cache_file"]))
+            instance_dir = output_root / global_instance_id
+            cache_path = output_root / cache_relative
+            graph_path = cache_path.with_suffix(".graph.json")
+            params_path = cache_path.with_suffix(".params.json")
+            unchanged = (
+                manifest_entry.get("status") == "complete"
+                and manifest_entry.get("preprocessing_hash") == preprocessing_hash
+                and manifest_entry.get("source_hashes") == source_hashes
+                and cache_path.is_file()
+                and graph_path.is_file()
+                and params_path.is_file()
+            )
+            if unchanged:
+                split_counts[split] += 1
+                skipped_instance_count += 1
+                manifest_instances.append(dict(manifest_entry))
+                _emit_progress(
+                    progress,
+                    "skipped",
+                    **progress_details,
+                    instance_id=global_instance_id,
+                    elapsed_seconds=time.perf_counter() - started_at,
+                )
+                continue
+            if existing_instance:
+                resumed_instance_count += 1
+            action = "resuming" if existing_instance else "creating"
+            _emit_progress(
+                progress,
+                "processing",
+                **progress_details,
+                instance_id=global_instance_id,
+                action=action,
+            )
+            manifest_entry.update(
+                {
+                    **dataset_identity,
+                    "source_instance_id": record.instance_id,
+                    "plant_id": global_instance_id,
+                    "source_plant_id": record.plant_id,
+                    "point_cloud_id": record.point_cloud_path.stem,
+                    "cache_file": cache_relative.as_posix(),
+                    "split": split,
+                    "preprocessing_hash": preprocessing_hash,
+                    "source_hashes": source_hashes,
+                    "status": "processing",
+                }
+            )
+            write_processed_dataset_manifest(output_root, dataset_manifest)
             source = {
-                "dataset": "TomatoWUR-v3",
+                **dataset_identity,
+                "instance_id": global_instance_id,
+                "source_instance_id": record.instance_id,
+                "source_plant_id": record.plant_id,
                 "split": split,
                 "annotation_version": str(cfg.annotation_version),
                 "preprocessing_hash": preprocessing_hash,
@@ -483,42 +667,64 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
                 "source_hashes": source_hashes,
             }
             raw = reader.load_record(record)
+            raw["source_instance_id"] = raw["instance_id"]
+            raw["source_plant_id"] = raw["plant_id"]
+            raw["instance_id"] = global_instance_id
+            raw["plant_id"] = global_instance_id
             sample, stats, support = preprocess_record(raw, cfg, source)
             sample.metadata["split"] = split
+            _emit_progress(
+                progress,
+                "writing",
+                **progress_details,
+                instance_id=global_instance_id,
+                action=action,
+            )
+            instance_dir.mkdir(parents=True, exist_ok=True)
             # Remove reports written by the retired heuristic repair pipeline.
-            quality_path = samples_dir / f"{record.plant_id}.quality.json"
+            quality_path = instance_dir / "quality.json"
             quality_path.unlink(missing_ok=True)
-            cache_name = f"{record.plant_id}.npz"
-            cache_path = samples_dir / cache_name
             save_processed_sample(sample, cache_path)
-            (samples_dir / f"{record.plant_id}.graph.json").write_text(
+            graph_path.write_text(
                 json.dumps(sample.graph_target.to_dict(), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            (samples_dir / f"{record.plant_id}.params.json").write_text(
+            params_path.write_text(
                 json.dumps(sample.param_target.to_dict(), indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+            context_path = instance_dir / "context.npz"
             if len(support):
                 np.savez_compressed(
-                    samples_dir / f"{record.plant_id}.context.npz",
+                    context_path,
                     support_pole_xyz=support,
                 )
+            else:
+                context_path.unlink(missing_ok=True)
             split_counts[split] += 1
-            manifest_samples.append(
+            manifest_entry.update(
                 {
-                    "plant_id": record.plant_id,
-                    "cache_file": cache_name,
-                    "split": split,
                     "cache_sha256": sha256_file(cache_path),
-                    "source_hashes": source_hashes,
+                    "status": "complete",
                     **stats,
                 }
             )
-    count = len(manifest_samples)
-    manifest = {
+            manifest_instances.append(dict(manifest_entry))
+            write_processed_dataset_manifest(output_root, dataset_manifest)
+            _emit_progress(
+                progress,
+                "completed",
+                **progress_details,
+                instance_id=global_instance_id,
+                action=action,
+                point_count=stats["point_count"],
+                elapsed_seconds=time.perf_counter() - started_at,
+            )
+    count = len(manifest_instances)
+    report = {
         "schema_version": "1.0",
-        "dataset": "TomatoWUR-v3",
+        "layout": "flat-plant-instance-v1",
+        **dataset_identity,
         "split": str(cfg.split),
         "splits": splits,
         "split_file": str(readers[str(cfg.split)].split_file),
@@ -535,16 +741,30 @@ def preprocess_dataset(cfg: DictConfig) -> dict[str, Any]:
             "4": "side_stem",
         },
         "sample_count": count,
+        "instance_count": count,
+        "plant_count": count,
+        "source_plant_count": len(current_plant_ids),
+        "point_cloud_count": count,
+        "new_instance_count": new_instance_count,
+        "resumed_instance_count": resumed_instance_count,
+        "skipped_instance_count": skipped_instance_count,
+        "next_plant_number": next_plant_number(output_root, dataset_manifest),
         "source_sample_count": sum(len(reader) for reader in readers.values()),
         "skeleton_source": "official_ground_truth",
         "skeleton_mode": "official_gt_direct",
         "skeleton_annotation_version": str(cfg.annotation_version),
         "skeleton_modified_count": 0,
         "warnings": warnings,
-        "samples": manifest_samples,
+        "instances": manifest_instances,
     }
-    output_root.mkdir(parents=True, exist_ok=True)
-    (output_root / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    write_processed_dataset_manifest(output_root, dataset_manifest)
+    _emit_progress(
+        progress,
+        "finished",
+        total=total_instances,
+        new_instance_count=new_instance_count,
+        resumed_instance_count=resumed_instance_count,
+        skipped_instance_count=skipped_instance_count,
+        next_plant_number=report["next_plant_number"],
     )
-    return manifest
+    return report

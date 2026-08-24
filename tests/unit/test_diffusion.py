@@ -5,7 +5,7 @@ import unittest
 import torch
 
 from tomato_recon.data.collate import collate_plant_samples
-from tomato_recon.data.tomatowur import make_tiny_sample
+from tomato_recon.data.processed import make_tiny_sample
 from tomato_recon.models.diffusion.losses import masked_mse
 from tomato_recon.models.diffusion.model import ConditionalSkeletonDenoiser
 from tomato_recon.models.diffusion.sampling import existence_nms, sample_skeleton
@@ -54,4 +54,3 @@ class DiffusionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -14,7 +14,7 @@ Every training stage reports epoch and batch progress, running component losses,
 ## 2. Mount or download TomatoWUR v3 outside the image
 
 - Prerequisite: access to TomatoWUR v3.
-- Command: place or mount it at `data/raw/TomatoWUR_v3`; run `test -d data/raw/TomatoWUR_v3/point_clouds && test -d data/raw/TomatoWUR_v3/ann_versions`.
+- Command: place or mount it at `data/TomatoWUR`; run `test -d data/TomatoWUR/point_clouds && test -d data/TomatoWUR/ann_versions`.
 - Expected: original point clouds, annotations/splits, images, and camera poses remain outside the image.
 - Verify: update `data.raw_root` if the mount differs. No project command downloads the data.
 
@@ -28,7 +28,7 @@ Every training stage reports epoch and batch progress, running component losses,
 ## 4. Visualise three plants
 
 - Prerequisite: three processed plants.
-- Command: `python scripts/visualize_dataset.py data/processed/v3_gt_K256 --count 3 --output outputs/dataset_preview`.
+- Command: `python scripts/visualize_dataset.py data/dataset --count 3 --output outputs/dataset_preview`.
 - Expected: three PNG previews, each with X-Z, Y-Z, and X-Y projections. Red edges are copied directly from the official corrected GT.
 - Verify: visually inspect roots, labels, support-pole separation, tips, junctions, scale, and connectivity.
 
@@ -46,7 +46,7 @@ Visualise predictions from the trained Stage 1 checkpoint:
 docker compose -f docker/docker-compose.yml run --rm train \
   python scripts/visualize_encoder_predictions.py \
   --checkpoint outputs/encoder/best.ckpt \
-  --processed-root data/processed/v3_gt_K256 \
+  --processed-root data/dataset \
   --split test --count 3 \
   --output outputs/encoder/test_visualizations
 ```
@@ -103,14 +103,14 @@ The combined cache retains the official plant-level split: 35 train, 4 validatio
 ## 12. Evaluate the frozen test set once
 
 - Prerequisite: frozen experiment configuration and complete test predictions.
-- Command: `python -m tomato_recon.evaluate --processed-root data/processed/v3_gt_K256 --predictions outputs/inference --output outputs/evaluation/metrics.json`.
+- Command: `python -m tomato_recon.evaluate --processed-root data/dataset --predictions outputs/inference --output outputs/evaluation/metrics.json`.
 - Expected: per-sample/aggregate skeleton, topology, and trait results; geometry/fruit are in `secondary_aggregate`.
 - Verify: `primary_metric_groups` contains skeleton/topology/traits, geometry contains normal consistency when normals exist, and no test result was used for tuning.
 
 ## 13. Infer one sample and export
 
 - Prerequisite: joint checkpoint and processed NPZ or isolated CSV/ASCII PLY.
-- Command: `python -m tomato_recon.infer --config-name infer input.path=data/processed/v3_gt_K256/samples/PLANT_ID.npz model.pipeline_checkpoint=outputs/joint/best.ckpt inference.num_diffusion_samples=4 output.dir=outputs/inference/PLANT_ID`.
+- Command: `python -m tomato_recon.infer --config-name infer input.path=data/dataset/plant_000001/sample.npz model.pipeline_checkpoint=outputs/joint/best.ckpt inference.num_diffusion_samples=4 output.dir=outputs/inference/plant_000001`.
 - Expected: every file in the inference output contract, including graph, parameters, mesh, traits, uncertainty, preview, USD, and report.
 - Verify: open JSON/PLY outputs and check `export_report.json`; ground-truth node count is not read by sampling.
 

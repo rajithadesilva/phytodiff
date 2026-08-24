@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 from PIL import Image, ImageDraw
 
-from tomato_recon.data.tomatowur import ProcessedTomatoDataset
+from tomato_recon.data.processed import ProcessedPlantDataset
 
 
 PROJECTIONS = (("front X-Z", (0, 2)), ("side Y-Z", (1, 2)), ("top X-Y", (0, 1)))
@@ -111,7 +111,7 @@ def main() -> None:
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--output", type=Path, default=Path("outputs/dataset_preview"))
     args = parser.parse_args()
-    dataset = ProcessedTomatoDataset(args.processed_root)
+    dataset = ProcessedPlantDataset(args.processed_root)
     if len(dataset) < args.count:
         raise ValueError(
             f"visualisation smoke test needs {args.count} plants, found {len(dataset)}"

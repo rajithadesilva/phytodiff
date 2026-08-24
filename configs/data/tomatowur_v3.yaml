@@ -1,6 +1,9 @@
-dataset: TomatoWUR-v3
-raw_root: data/raw/TomatoWUR_v3
-processed_root: data/processed/v3_gt_K256
+dataset_id: tomatowur
+dataset_name: TomatoWUR
+dataset_version: "3"
+raw_root: data/TomatoWUR
+dataset_root: data/dataset
+processed_root: ${.dataset_root}
 annotation_version: 0-paper-2Dto3D_improved
 skeleton_mode: official_gt_direct
 split: train

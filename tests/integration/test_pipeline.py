@@ -6,7 +6,7 @@ from pathlib import Path
 
 from tomato_recon.config import load_config
 from tomato_recon.data.collate import collate_plant_samples
-from tomato_recon.data.tomatowur import make_tiny_sample
+from tomato_recon.data.processed import make_tiny_sample
 from tomato_recon.infer import write_inference_outputs
 from tomato_recon.models.pipeline import TomatoReconstructionPipeline
 
