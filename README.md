@@ -92,16 +92,19 @@ The default source archives contribute:
 
 Running all three against an initially empty destination produces 163 complete instances. The converters reject cross-date split leakage by keeping every scan from the same physical source plant in one split.
 
-### 4. Visualise at least three processed plants
+### 4. Visualise the processed dataset
 
-Prerequisite: at least three Stage 0 samples.
+Prerequisite: at least one completed Stage 0 sample. `--count 0` renders every completed instance in the flat manifest; use a positive value for a smaller prefix.
 
 ```bash
-python scripts/visualize_dataset.py data/dataset --count 3 --output outputs/dataset_preview
-test "$(find outputs/dataset_preview -name '*.png' | wc -l)" -ge 3
+docker compose -f docker/docker-compose.yml run --rm preprocess \
+  python scripts/visualize_dataset.py data/dataset --count 0 \
+  --output outputs/dataset_preview
+
+python -c "import json, pathlib; m=json.load(open('data/dataset/manifest.json')); expected=sum(x['status']=='complete' for x in m['instances']); actual=len(list(pathlib.Path('outputs/dataset_preview').glob('plant_*.png'))); print({'expected': expected, 'actual': actual}); assert actual == expected"
 ```
 
-Expected: three root-centred, three-view point-cloud/skeleton previews. Inspect root position, labels, junctions, and tips. Red lines show the cached target edges: preserved official GT for TomatoWUR, resampled source graph paths for TomatoPGT, or deterministic reconstructed targets for Pheno4D.
+Expected: one root-centred, three-view PNG per completed point-cloud instance. With all three default sources this is 163 images. Inspect root position, labels, junctions, and tips. Each viewport is framed using labelled plant points and skeleton nodes so background surfaces do not hide small plants. Red lines show the cached target edges: preserved official GT for TomatoWUR, resampled source graph paths for TomatoPGT, or deterministic reconstructed targets for Pheno4D. Pheno4D has no RGB, so its points use the canonical semantic-class palette.
 
 ### 5. Train Stage 1: point encoder
 
