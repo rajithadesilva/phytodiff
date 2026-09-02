@@ -2,19 +2,20 @@
 
 This repository reconstructs one isolated tomato plant from a labelled or unlabelled 3D scan. The canonical output is a rooted, typed, attributed plant graph. A fixed-slot conditional diffusion model completes the centreline, a constrained arborescence decoder establishes biological topology, and differentiable PyTorch primitives generate editable stems, leaves, and confidence-supported optional fruit. Inference writes meshes, traits, uncertainty, and a metres/Z-up OpenUSD asset for NVIDIA Isaac Sim.
 
-The implementation follows `papers/Tomato_Diffusion_Parametric_Reconstruction_Implementation_Spec.pdf`. TomatoWUR v3 is external data: it is never downloaded by training code, copied into an image, or committed here.
+The implementation follows `papers/Tomato_Diffusion_Parametric_Reconstruction_Implementation_Spec.pdf`. TomatoWUR v3, TomatoPGT v1, and Pheno4D are external data: they are never downloaded by training code, copied into an image, or committed here.
 
 ## What is implemented
 
 ```text
-TomatoWUR CSVs -> deterministic fixed-K cache -> point encoder
+source dataset adapters -> deterministic canonical fixed-K cache -> point encoder
     -> conditional skeleton diffusion -> typed nodes + sparse parent scores
     -> constrained directed spanning tree -> organ parameters
     -> differentiable geometry -> graph/PLY/traits/uncertainty/OpenUSD
 ```
 
 - Typed contracts for samples, encoder output, skeleton predictions, graphs, organ parameters, geometry, and export reports.
-- Official TomatoWUR v3 CSV/JSON adapter, corrected ground-truth skeletons, metric root normalization, support-pole separation, deterministic voxel sampling, and lossless fixed-K padding.
+- Source-specific adapters for TomatoWUR v3, complete TomatoPGT v1 scans, and annotated Pheno4D tomato scans. Every point cloud becomes one globally numbered instance in the same flat `data/dataset/` directory.
+- Official TomatoWUR ground-truth skeleton preservation, TomatoPGT graph-path conversion, and deterministic Pheno4D centreline reconstruction from its manual stem/leaf instances.
 - Configurable PointNeXt-style default backbone plus lazy Pointcept PTv3, Sonata-PTv3, and LitePT adapters with actionable dependency errors.
 - Six-dimensional fixed-K diffusion over XYZ and parent flow, with existence/confidence heads, duplicate/bounds losses, FPS initialization, DDIM sampling, flow normalization, and NMS.
 - Separate organ/role/visibility heads, sparse k-nearest parent scoring, hard botanical masks, root selection, maximum directed spanning arborescence, and main-stem continuity.
@@ -49,28 +50,47 @@ docker compose -f docker/docker-compose.yml run --rm train python -c "import tor
 
 Expected: the cached multi-stage image builds and the check prints `True` for CUDA on a GPU host. Verify the resolved image digest with `docker image inspect tomato-parametric-reconstruction-train --format '{{json .RepoDigests}}'` and archive it in Step 15.
 
-### 2. Mount or download TomatoWUR v3 outside the image
+### 2. Mount the source datasets outside the image
 
-Prerequisite: access to [TomatoWUR v3](https://data.4tu.nl/datasets/e2c59841-4653-45de-a75e-4994b2766a2f/3) and acceptance of its terms.
+Prerequisite: access to the datasets you intend to use and acceptance of their terms. The default configuration paths are `data/TomatoWUR`, `data/TomatoPGT_v1.0`, and `data/Pheno4D`.
 
 ```bash
 test -d data/TomatoWUR/point_clouds
 test -d data/TomatoWUR/ann_versions
+test -d data/TomatoPGT_v1.0
+test -d data/Pheno4D/Tomato01
 ```
 
-Expected: the external dataset has `point_clouds/`, `ann_versions/`, `images/`, and `camera_poses/`. Verify that `configs/data/tomatowur_v3.yaml` points at that mount. The code never opens an interactive downloader.
+Sources: [TomatoWUR v3](https://data.4tu.nl/datasets/e2c59841-4653-45de-a75e-4994b2766a2f/3), [TomatoPGT v1](https://data.mendeley.com/datasets/72md54c7n7/1), and [Pheno4D](https://www.ipb.uni-bonn.de/data/pheno4d/index.html). Verify that the corresponding file under `configs/data/` points at each mount. The code never opens an interactive downloader.
+
+Format references: the [TomatoPGT paper](https://doi.org/10.1016/j.dib.2026.112642) and [CloudSeg/CloudGraph tools](https://github.com/nethpras/TomatoPGT-tools-binaries), plus the [Pheno4D paper](https://doi.org/10.1371/journal.pone.0256340) and [official data loaders](https://github.com/AIS-Bonn/data_loaders).
 
 ### 3. Run Stage 0 preprocessing and inspect fixed-K statistics
 
-Prerequisite: Step 2 and plant-level split JSONs.
+Prerequisite: Step 2. Run any subset of these commands; every adapter appends to the same globally numbered dataset.
 
 ```bash
 docker compose -f docker/docker-compose.yml run --rm preprocess \
   python scripts/prepare_tomatowur.py --config configs/data/tomatowur_v3.yaml
-python -c "import json; m=json.load(open('data/dataset/manifest.json')); print(m['datasets']['tomatowur'], m['next_plant_number'])"
+
+docker compose -f docker/docker-compose.yml run --rm preprocess \
+  python scripts/prepare_tomatopgt.py --config configs/data/tomatopgt_v1.yaml
+
+docker compose -f docker/docker-compose.yml run --rm preprocess \
+  python scripts/prepare_pheno4d.py --config configs/data/pheno4d_tomato.yaml
+
+python -c "import json; m=json.load(open('data/dataset/manifest.json')); print({k: v['instance_count'] for k, v in m['datasets'].items()}, m['next_plant_number'])"
 ```
 
-Expected: live progress shows split discovery and the checking, processing, writing, completion, or skip status of every point-cloud instance. `manifest.json` and one globally numbered `plant_<number>/` cache directory per point cloud contain versioned `.npz`, `.graph.json`, and `.params.json` files. TomatoWUR contributes 44 instances when the dataset is initially empty. Existing source instances are skipped on reruns; new instances continue after the highest plant number already present. Verify the official plant-level counts are 35 train, 4 validation, and 5 test. Stage 0 reads `0-paper-2Dto3D_improved` and preserves every official GT node and parent edge exactly; it only translates coordinates to the root-centred frame and pads to K=256.
+Expected: live progress shows discovery and the checking, processing, writing, completion, or skip status of every accepted point-cloud instance. `manifest.json` and one globally numbered `plant_<number>/` cache directory per point cloud contain versioned `.npz`, `.graph.json`, and `.params.json` files. There are no source-dataset subdirectories under `data/dataset/`. Existing source instances are skipped on reruns; new instances continue after the highest plant number already present.
+
+The default source archives contribute:
+
+- TomatoWUR: 44 instances with official split counts 35 train, 4 validation, and 5 test. Every official GT node and edge is preserved and padded to K=256.
+- TomatoPGT: 42 complete PLY/annotation/graph instances. Four raw-only scans and `CH_07012025`, which has no graph, are ignored. The known `CH_07112025` annotation/`CH_07122025` graph filename mismatch is declared in the config. Original RGB and normals are retained; graph edge paths are deterministically resampled into K=256.
+- Pheno4D: 77 annotated tomato instances with split counts 44 train, 11 validation, and 22 test. The 63 unlabelled tomato scans are ignored, maize directories are never discovered, unavailable RGB is represented by zeros, normals are estimated by local PCA, and centreline targets are reconstructed from the manual stem and temporally consistent leaf instances.
+
+Running all three against an initially empty destination produces 163 complete instances. The converters reject cross-date split leakage by keeping every scan from the same physical source plant in one split.
 
 ### 4. Visualise at least three processed plants
 
@@ -81,7 +101,7 @@ python scripts/visualize_dataset.py data/dataset --count 3 --output outputs/data
 test "$(find outputs/dataset_preview -name '*.png' | wc -l)" -ge 3
 ```
 
-Expected: three root-centred, three-view point-cloud/skeleton previews. Inspect root position, support-pole removal, labels, junctions, and tips. Red lines are the official GT parent edges; no repair edges are generated.
+Expected: three root-centred, three-view point-cloud/skeleton previews. Inspect root position, labels, junctions, and tips. Red lines show the cached target edges: preserved official GT for TomatoWUR, resampled source graph paths for TomatoPGT, or deterministic reconstructed targets for Pheno4D.
 
 ### 5. Train Stage 1: point encoder
 

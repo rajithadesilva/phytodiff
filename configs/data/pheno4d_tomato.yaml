@@ -1,0 +1,30 @@
+dataset_id: pheno4d
+dataset_name: Pheno4D Tomato
+dataset_version: "1"
+raw_root: data/Pheno4D
+dataset_root: data/dataset
+processed_root: ${.dataset_root}
+split_by_source_plant:
+  Tomato01: train
+  Tomato02: train
+  Tomato03: train
+  Tomato04: train
+  Tomato05: val
+  Tomato06: test
+  Tomato07: test
+expected_complete_instances: 77
+voxel_size_m: 0.001
+num_points: 100000
+max_nodes: 256
+skeleton_spacing_m: 0.006
+visibility_distance_m: 0.01
+normal_neighbors: 20
+stem_slice_m: 0.004
+min_leaf_points: 50
+leaf_skeleton_voxel_m: 0.004
+leaf_graph_neighbors: 8
+leaf_graph_radius_m: 0.016
+leaf_graph_max_points: 6000
+reconstructed_graph_confidence: 0.8
+strict: true
+

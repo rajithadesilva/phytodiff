@@ -1,0 +1,21 @@
+dataset_id: tomatopgt
+dataset_name: TomatoPGT
+dataset_version: "1.0"
+raw_root: data/TomatoPGT_v1.0
+dataset_root: data/dataset
+processed_root: ${.dataset_root}
+split_by_source_plant:
+  BEEF_STEAK: train
+  BIG_BOY_HYBRID: val
+  Celebrity_Hybrid: test
+graph_aliases:
+  # The released annotation is dated 07/11 while its matching graph is dated 07/12.
+  CH_07112025: CH_07122025
+expected_complete_instances: 42
+voxel_size_m: 0.001
+num_points: 100000
+max_nodes: 256
+skeleton_spacing_m: 0.006
+visibility_distance_m: 0.01
+strict: true
+
