@@ -12,7 +12,7 @@ model:
     global_dim: 128
     num_semantic_classes: 5
     pretrained_checkpoint: null
-    checkpoint: outputs/stage1_ablation/kpconvx/best.ckpt
+    checkpoint: outputs/stage1_benchmark/combined/kpconvx/best.ckpt
     grid_size: 0.005
     shell_sizes: [1, 14, 28]
     layer_blocks: [2, 2, 2, 8, 2]

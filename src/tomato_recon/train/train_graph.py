@@ -27,6 +27,7 @@ from tomato_recon.train.common import (
     select_device,
     stage_output_dir,
     save_checkpoint,
+    training_dataset_compatibility,
     write_metrics,
     write_run_metadata,
 )
@@ -84,7 +85,9 @@ def main(argv: list[str] | None = None) -> None:
     if known.resume:
         checkpoint = load_checkpoint(
             known.resume, model, optimizer=optimizer,
-            expected_preprocessing_hash=batch.samples[0].metadata.get("preprocessing_hash"),
+            expected_dataset_compatibility=training_dataset_compatibility(
+                cfg, batch.samples[0]
+            ),
             expected_max_nodes=int(cfg.data.max_nodes)
         )
         start_epoch = int(checkpoint["epoch"]) + 1

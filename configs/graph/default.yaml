@@ -3,7 +3,7 @@ data:
   graph_training_source: ground_truth_then_predicted
 model:
   encoder:
-    checkpoint: outputs/stage1_ablation/kpconvx/best.ckpt
+    checkpoint: outputs/stage1_benchmark/combined/kpconvx/best.ckpt
   diffusion:
     checkpoint: outputs/diffusion/best.ckpt
 output:

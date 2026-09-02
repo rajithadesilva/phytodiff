@@ -1,0 +1,7 @@
+dataset: combined
+dataset_root: data/dataset
+processed_root: ${.dataset_root}
+split: train
+max_nodes: 256
+num_points: 100000
+

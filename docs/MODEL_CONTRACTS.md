@@ -26,5 +26,8 @@ JSON schema 1.0 records Z-up/metres, one root, typed/role/visibility/confidence 
 
 ## Checkpoints
 
-Each `best.ckpt` contains schema/stage/epoch, model and optimizer state, fully resolved configuration, label map, preprocessing hash, K, git commit/dirty flag, upstream checkpoint hashes, and metrics. Loading fails before state mutation when cache hash or K is incompatible.
-
+Each `best.ckpt` contains schema/stage/epoch, model and optimizer state, fully resolved
+configuration, label map, the selected source-to-preprocessing-hash compatibility map and
+signature, K, git commit/dirty flag, upstream checkpoint hashes, and metrics. A legacy
+single-source preprocessing hash is retained when unambiguous. Loading fails before state
+mutation when the dataset contract or K is incompatible.

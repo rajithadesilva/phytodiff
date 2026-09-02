@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -29,6 +30,7 @@ from tomato_recon.data.schemas import (
 _DATASET_ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _PLANT_FOLDER = re.compile(r"^plant_(\d+)$")
+COMBINED_DATASET = "combined"
 
 
 def _plant_number(value: str, *, context: str) -> int:
@@ -156,6 +158,95 @@ def load_processed_dataset_manifest(root: str | Path) -> dict[str, Any]:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     _validate_flat_manifest(manifest, path=path)
     return manifest
+
+
+def normalise_dataset_selection(dataset: str | None) -> str:
+    """Return the canonical source selector used by training and evaluation."""
+    selection = COMBINED_DATASET if dataset is None else str(dataset).strip().lower()
+    if not selection:
+        selection = COMBINED_DATASET
+    if not _DATASET_ID.fullmatch(selection):
+        raise ValueError(
+            "data.dataset must be 'combined' or a lowercase filesystem-safe source "
+            "dataset ID"
+        )
+    return selection
+
+
+def _select_manifest_instances(
+    manifest: Mapping[str, Any],
+    *,
+    split: str | None,
+    dataset: str | None,
+) -> tuple[str, list[dict[str, Any]]]:
+    selection = normalise_dataset_selection(dataset)
+    instances = [
+        item for item in manifest["instances"] if item.get("status") == "complete"
+    ]
+    available = sorted({str(item.get("dataset", "")) for item in instances})
+    if selection != COMBINED_DATASET:
+        if selection not in available:
+            raise ValueError(
+                f"source dataset {selection!r} is not available; choose one of "
+                f"{available or ['<none>']} or {COMBINED_DATASET!r}"
+            )
+        instances = [item for item in instances if item.get("dataset") == selection]
+    if split is not None:
+        instances = [
+            item
+            for item in instances
+            if item.get("split", manifest.get("split")) == split
+        ]
+    return selection, instances
+
+
+def processed_dataset_compatibility(
+    root: str | Path, dataset: str | None = COMBINED_DATASET
+) -> dict[str, Any]:
+    """Describe all preprocessing variants selected for a training checkpoint.
+
+    The signature deliberately spans every completed split for the selected sources.
+    Training, validation, testing, resume, and downstream stages therefore share one
+    stable compatibility contract without depending on manifest order or a sampled
+    plant instance.
+    """
+    root = Path(root)
+    manifest = load_processed_dataset_manifest(root)
+    selection, instances = _select_manifest_instances(
+        manifest, split=None, dataset=dataset
+    )
+    if not instances:
+        raise ValueError(f"processed dataset selection {selection!r} contains no samples")
+
+    dataset_hashes: dict[str, list[str]] = {}
+    for dataset_id in sorted({str(item["dataset"]) for item in instances}):
+        hashes = {
+            str(item.get("preprocessing_hash", "")).strip()
+            for item in instances
+            if item.get("dataset") == dataset_id
+        }
+        hashes.discard("")
+        registry_hash = str(
+            manifest.get("datasets", {}).get(dataset_id, {}).get("preprocessing_hash", "")
+        ).strip()
+        if not hashes and registry_hash:
+            hashes.add(registry_hash)
+        if not hashes:
+            raise ValueError(
+                f"source dataset {dataset_id!r} has no preprocessing hash in {root}"
+            )
+        dataset_hashes[dataset_id] = sorted(hashes)
+
+    contract = {
+        "schema_version": "1.0",
+        "manifest_schema_version": str(manifest.get("schema_version", "unknown")),
+        "layout": str(manifest.get("layout", "unknown")),
+        "datasets": dataset_hashes,
+    }
+    signature = hashlib.sha256(
+        json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {**contract, "selection": selection, "signature": signature}
 
 
 def next_plant_number(root: str | Path, manifest: Mapping[str, Any]) -> int:
@@ -299,23 +390,22 @@ def load_processed_sample(path: str | Path) -> PlantSample:
 class ProcessedPlantDataset(Dataset[PlantSample]):
     """Load completed point-cloud instances from the shared flat dataset."""
 
-    def __init__(self, root: str | Path, split: str | None = None) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        split: str | None = None,
+        dataset: str | None = COMBINED_DATASET,
+    ) -> None:
         self.root = Path(root)
         manifest_path = self.root / "manifest.json"
         if not manifest_path.is_file():
             raise FileNotFoundError(f"processed manifest not found: {manifest_path}")
         self.manifest = load_processed_dataset_manifest(self.root)
-        instances = [
-            item
-            for item in self.manifest["instances"]
-            if item.get("status") == "complete"
-        ]
-        if split is not None:
-            instances = [
-                item
-                for item in instances
-                if item.get("split", self.manifest.get("split")) == split
-            ]
+        self.dataset, instances = _select_manifest_instances(
+            self.manifest, split=split, dataset=dataset
+        )
+        self.instances = instances
+        self.dataset_ids = tuple(sorted({str(item["dataset"]) for item in instances}))
         cache_root = self.root
         root_resolved = self.root.resolve()
         self.paths = []

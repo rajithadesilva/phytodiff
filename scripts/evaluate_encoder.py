@@ -10,7 +10,11 @@ from pathlib import Path
 import torch
 from omegaconf import OmegaConf
 
-from tomato_recon.data.processed import ProcessedPlantDataset
+from tomato_recon.data.processed import (
+    ProcessedPlantDataset,
+    normalise_dataset_selection,
+    processed_dataset_compatibility,
+)
 from tomato_recon.evaluation.encoder import evaluate_encoder_model
 from tomato_recon.models.encoders.base import PointEncoder
 from tomato_recon.models.encoders.registry import create_backbone_from_config
@@ -22,6 +26,10 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--processed-root", type=Path, required=True)
     parser.add_argument("--split", choices=("val", "test"), required=True)
+    parser.add_argument(
+        "--dataset",
+        help="Source dataset ID, or 'combined'; defaults to the checkpoint selection",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     args = parser.parse_args()
@@ -31,10 +39,19 @@ def main() -> None:
         raise ValueError(f"expected encoder checkpoint, found {payload.get('stage')!r}")
     cfg = OmegaConf.create(payload["config"])
     cfg.data.processed_root = str(args.processed_root)
+    training_dataset = normalise_dataset_selection(
+        cfg.data.get("dataset", "combined")
+    )
+    dataset_selection = normalise_dataset_selection(
+        args.dataset or training_dataset
+    )
+    cfg.data.dataset = dataset_selection
     cfg.trainer.batch_size = 1
     cfg.trainer.num_workers = 0
     cfg.trainer.fast_dev_run = False
-    dataset = ProcessedPlantDataset(args.processed_root, split=args.split)
+    dataset = ProcessedPlantDataset(
+        args.processed_root, split=args.split, dataset=dataset_selection
+    )
     if not len(dataset):
         raise ValueError(f"split {args.split!r} is empty at {args.processed_root}")
     first = dataset[0]
@@ -45,7 +62,10 @@ def main() -> None:
     checkpoint = load_checkpoint(
         args.checkpoint,
         model,
-        expected_preprocessing_hash=first.metadata.get("preprocessing_hash"),
+        expected_dataset_compatibility=processed_dataset_compatibility(
+            args.processed_root, dataset_selection
+        ),
+        allow_dataset_subset=True,
         expected_max_nodes=len(first.node_xyz),
     )
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -64,6 +84,9 @@ def main() -> None:
     report = {
         "schema_version": "1.0",
         "split": args.split,
+        "training_dataset": training_dataset,
+        "dataset": dataset_selection,
+        "evaluation_dataset": dataset_selection,
         "sample_count": len(dataset),
         "checkpoint": str(args.checkpoint),
         "checkpoint_epoch": int(checkpoint.get("epoch", -1)) + 1,

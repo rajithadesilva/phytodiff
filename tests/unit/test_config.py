@@ -9,7 +9,11 @@ import torch
 from tomato_recon.config import load_config
 from tomato_recon.data.processed import make_tiny_sample
 from tomato_recon.models.encoders.registry import create_backbone, ensure_backbone_available, list_backbones
-from tomato_recon.train.common import load_checkpoint, save_checkpoint
+from tomato_recon.train.common import (
+    dataset_compatibility_contains,
+    load_checkpoint,
+    save_checkpoint,
+)
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -18,14 +22,16 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.model.encoder.name, "kpconvx")
         self.assertFalse(cfg.model.encoder.pretrained)
         self.assertEqual(
-            cfg.model.encoder.checkpoint, "outputs/stage1_ablation/kpconvx/best.ckpt"
+            cfg.model.encoder.checkpoint,
+            "outputs/stage1_benchmark/combined/kpconvx/best.ckpt",
         )
+        self.assertEqual(cfg.data.dataset, "combined")
 
         diffusion_cfg, _ = load_config("diffusion")
         self.assertEqual(diffusion_cfg.model.encoder.name, "kpconvx")
         self.assertEqual(
             diffusion_cfg.model.encoder.checkpoint,
-            "outputs/stage1_ablation/kpconvx/best.ckpt",
+            "outputs/stage1_benchmark/combined/kpconvx/best.ckpt",
         )
 
     def test_stage1_registry_has_only_supported_models(self) -> None:
@@ -68,10 +74,51 @@ class ConfigurationTests(unittest.TestCase):
                 epoch=0,
                 metrics={},
             )
+            checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+            self.assertIn("dataset_compatibility", checkpoint)
+            self.assertTrue(checkpoint["dataset_compatibility"]["signature"])
             with self.assertRaisesRegex(ValueError, "preprocessing hash mismatch"):
                 load_checkpoint(path, model, expected_preprocessing_hash="different")
             with self.assertRaisesRegex(ValueError, "max_nodes mismatch"):
                 load_checkpoint(path, model, expected_max_nodes=17)
+            expected = checkpoint["dataset_compatibility"]
+            checkpoint["dataset_compatibility"] = {
+                **expected,
+                "datasets": {
+                    **expected["datasets"],
+                    "another-source": ["another-hash"],
+                },
+                "signature": "combined-signature",
+            }
+            torch.save(checkpoint, path)
+            with self.assertRaisesRegex(ValueError, "dataset compatibility mismatch"):
+                load_checkpoint(path, model, expected_dataset_compatibility=expected)
+            load_checkpoint(
+                path,
+                model,
+                expected_dataset_compatibility=expected,
+                allow_dataset_subset=True,
+            )
+
+    def test_combined_checkpoint_compatibility_contains_source_evaluation(self) -> None:
+        shared = {
+            "schema_version": "1.0",
+            "manifest_schema_version": "1.0",
+            "layout": "flat-plant-instance-v1",
+        }
+        combined = {
+            **shared,
+            "datasets": {
+                "tomatowur": ["wur-hash"],
+                "tomatopgt": ["pgt-hash"],
+                "pheno4d": ["pheno-hash"],
+            },
+        }
+        pheno4d = {**shared, "datasets": {"pheno4d": ["pheno-hash"]}}
+        wrong_pheno4d = {**shared, "datasets": {"pheno4d": ["different-hash"]}}
+        self.assertTrue(dataset_compatibility_contains(combined, pheno4d))
+        self.assertFalse(dataset_compatibility_contains(pheno4d, combined))
+        self.assertFalse(dataset_compatibility_contains(combined, wrong_pheno4d))
 
 
 if __name__ == "__main__":

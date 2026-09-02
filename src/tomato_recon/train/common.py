@@ -19,7 +19,13 @@ from torch.utils.data import DataLoader
 from tomato_recon.config import save_resolved_config
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import PlantBatch, PlantSample
-from tomato_recon.data.processed import ProcessedPlantDataset, make_tiny_sample
+from tomato_recon.data.processed import (
+    COMBINED_DATASET,
+    ProcessedPlantDataset,
+    make_tiny_sample,
+    normalise_dataset_selection,
+    processed_dataset_compatibility,
+)
 
 
 class TrainingProgress:
@@ -95,12 +101,50 @@ def select_device(cfg: DictConfig) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() and int(cfg.trainer.devices) > 0 else "cpu")
 
 
+def selected_dataset(cfg: DictConfig) -> str:
+    """Return the source dataset requested by the current run."""
+    return normalise_dataset_selection(cfg.data.get("dataset", COMBINED_DATASET))
+
+
+def training_dataset_compatibility(
+    cfg: DictConfig, sample: PlantSample | None = None
+) -> dict[str, Any]:
+    """Build the stable multi-source checkpoint contract for the current run."""
+    manifest = Path(cfg.data.processed_root) / "manifest.json"
+    if manifest.is_file():
+        return processed_dataset_compatibility(
+            cfg.data.processed_root, selected_dataset(cfg)
+        )
+    if sample is None:
+        raise FileNotFoundError(f"processed manifest not found: {manifest}")
+    preprocessing_hash = str(sample.metadata.get("preprocessing_hash", "")).strip()
+    if not preprocessing_hash:
+        raise ValueError("training sample has no preprocessing hash")
+    contract = {
+        "schema_version": "1.0",
+        "manifest_schema_version": "synthetic",
+        "layout": "synthetic-fixture",
+        "datasets": {"synthetic-test-fixture": [preprocessing_hash]},
+    }
+    signature = hashlib.sha256(
+        json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {**contract, "selection": "synthetic-test-fixture", "signature": signature}
+
+
 def load_training_sample(cfg: DictConfig) -> PlantSample:
     manifest = Path(cfg.data.processed_root) / "manifest.json"
     if manifest.is_file():
-        dataset = ProcessedPlantDataset(cfg.data.processed_root, split=str(cfg.data.split))
+        dataset = ProcessedPlantDataset(
+            cfg.data.processed_root,
+            split=str(cfg.data.split),
+            dataset=selected_dataset(cfg),
+        )
         if not len(dataset):
-            raise ValueError(f"processed split {cfg.data.split!r} contains no samples")
+            raise ValueError(
+                f"processed split {cfg.data.split!r} for dataset "
+                f"{selected_dataset(cfg)!r} contains no samples"
+            )
         return dataset[0]
     if bool(cfg.trainer.fast_dev_run):
         return make_tiny_sample(int(cfg.data.max_nodes), min(int(cfg.data.num_points), 96), int(cfg.seed))
@@ -118,10 +162,15 @@ def create_split_loader(
 ) -> DataLoader | list[PlantBatch]:
     manifest = Path(cfg.data.processed_root) / "manifest.json"
     if manifest.is_file():
-        dataset = ProcessedPlantDataset(cfg.data.processed_root, split=split)
+        dataset = ProcessedPlantDataset(
+            cfg.data.processed_root,
+            split=split,
+            dataset=selected_dataset(cfg),
+        )
         if not len(dataset):
             raise ValueError(
-                f"processed split {split!r} contains no samples at {cfg.data.processed_root}"
+                f"processed split {split!r} for dataset {selected_dataset(cfg)!r} "
+                f"contains no samples at {cfg.data.processed_root}"
             )
         generator = torch.Generator().manual_seed(int(cfg.seed))
         return DataLoader(
@@ -221,6 +270,24 @@ def checkpoint_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def dataset_compatibility_contains(
+    actual: dict[str, Any], expected: dict[str, Any]
+) -> bool:
+    """Return whether a checkpoint contract covers an evaluation subset."""
+    for field in ("schema_version", "manifest_schema_version", "layout"):
+        if actual.get(field) != expected.get(field):
+            return False
+    actual_datasets = actual.get("datasets", {})
+    expected_datasets = expected.get("datasets", {})
+    if not isinstance(actual_datasets, dict) or not isinstance(expected_datasets, dict):
+        return False
+    return all(
+        dataset_id in actual_datasets
+        and set(expected_hashes).issubset(set(actual_datasets[dataset_id]))
+        for dataset_id, expected_hashes in expected_datasets.items()
+    )
+
+
 def save_checkpoint(
     path: str | Path,
     *,
@@ -236,15 +303,28 @@ def save_checkpoint(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     state = git_state()
+    compatibility = training_dataset_compatibility(cfg, sample)
+    preprocessing_hashes = sorted(
+        {
+            preprocessing_hash
+            for hashes in compatibility["datasets"].values()
+            for preprocessing_hash in hashes
+        }
+    )
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "stage": stage,
         "epoch": epoch,
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
         "config": OmegaConf.to_container(cfg, resolve=True),
         "label_map": {0: "background", 1: "leaf", 2: "main_stem", 3: "support_pole", 4: "side_stem"},
-        "preprocessing_hash": sample.metadata.get("preprocessing_hash"),
+        # Retained for readers of single-source and legacy checkpoints. Combined
+        # checkpoints use dataset_compatibility as their authoritative contract.
+        "preprocessing_hash": (
+            preprocessing_hashes[0] if len(preprocessing_hashes) == 1 else None
+        ),
+        "dataset_compatibility": compatibility,
         "max_nodes": int(cfg.data.max_nodes),
         "git_commit": state["commit"],
         "git_dirty": bool(state["status"] and state["status"] != "unknown"),
@@ -261,6 +341,8 @@ def load_checkpoint(
     *,
     optimizer: torch.optim.Optimizer | None = None,
     expected_preprocessing_hash: str | None = None,
+    expected_dataset_compatibility: dict[str, Any] | None = None,
+    allow_dataset_subset: bool = False,
     expected_max_nodes: int | None = None,
     strict: bool = True,
 ) -> dict[str, Any]:
@@ -269,10 +351,52 @@ def load_checkpoint(
         raise FileNotFoundError(f"checkpoint not found: {path}")
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     actual_hash = checkpoint.get("preprocessing_hash")
-    if expected_preprocessing_hash and actual_hash != expected_preprocessing_hash:
-        raise ValueError(
-            f"checkpoint preprocessing hash mismatch: expected {expected_preprocessing_hash}, got {actual_hash}"
+    actual_compatibility = checkpoint.get("dataset_compatibility")
+    if expected_dataset_compatibility is not None:
+        expected_signature = expected_dataset_compatibility.get("signature")
+        actual_signature = (
+            actual_compatibility.get("signature")
+            if isinstance(actual_compatibility, dict)
+            else None
         )
+        if actual_signature is None:
+            expected_hashes = {
+                value
+                for values in expected_dataset_compatibility.get("datasets", {}).values()
+                for value in values
+            }
+            legacy_compatible = len(expected_hashes) == 1 and actual_hash in expected_hashes
+            if not legacy_compatible:
+                raise ValueError(
+                    "checkpoint dataset compatibility mismatch: the checkpoint has only "
+                    "legacy single-source preprocessing metadata"
+                )
+        elif actual_signature != expected_signature and not (
+            allow_dataset_subset
+            and isinstance(actual_compatibility, dict)
+            and dataset_compatibility_contains(
+                actual_compatibility, expected_dataset_compatibility
+            )
+        ):
+            raise ValueError(
+                "checkpoint dataset compatibility mismatch: expected signature "
+                f"{expected_signature}, got {actual_signature}"
+            )
+    if expected_preprocessing_hash:
+        compatible_hashes = (
+            {
+                value
+                for values in actual_compatibility.get("datasets", {}).values()
+                for value in values
+            }
+            if isinstance(actual_compatibility, dict)
+            else {actual_hash}
+        )
+        if expected_preprocessing_hash not in compatible_hashes:
+            raise ValueError(
+                "checkpoint preprocessing hash mismatch: expected compatible hash "
+                f"{expected_preprocessing_hash}, got {sorted(str(x) for x in compatible_hashes)}"
+            )
     if expected_max_nodes is not None and int(checkpoint.get("max_nodes", -1)) != expected_max_nodes:
         raise ValueError(
             f"checkpoint max_nodes mismatch: expected {expected_max_nodes}, got {checkpoint.get('max_nodes')}"
@@ -294,7 +418,7 @@ def maybe_load_upstream(
             load_checkpoint(
                 path,
                 module,
-                expected_preprocessing_hash=sample.metadata.get("preprocessing_hash"),
+                expected_dataset_compatibility=training_dataset_compatibility(cfg, sample),
                 expected_max_nodes=int(cfg.data.max_nodes),
             )
         except ValueError:

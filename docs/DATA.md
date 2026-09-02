@@ -72,6 +72,10 @@ Split JSON entries must resolve point-cloud, label, and skeleton paths. Official
 7. Fit stem/leaf parameter targets from graph chains and labelled scan support.
 8. Reserve the next global plant number, then write one versioned JSON/NPZ cache directory per point-cloud instance and update the shared manifest.
 
-Processed files contain the canonical tensor fields documented in [MODEL_CONTRACTS.md](MODEL_CONTRACTS.md). A cache is rejected when checkpoint preprocessing hash or K differs.
+Processed files contain the canonical tensor fields documented in
+[MODEL_CONTRACTS.md](MODEL_CONTRACTS.md). Training selects a source with
+`data.dataset=<source_id>` or uses `data.dataset=combined`. A checkpoint records the
+complete selected source/preprocessing-hash signature and is rejected when that contract
+or K differs.
 
 Fruit proposals for an instance belong in its numbered folder as `fruit_pseudo.npz`; no auxiliary directory is created at the dataset root. The included script writes the external detector contract under `outputs/fruit_pseudo` but intentionally fabricates no fruit supervision. Predictions below `fruit.min_confidence` are excluded, and fruit never enters primary metrics.

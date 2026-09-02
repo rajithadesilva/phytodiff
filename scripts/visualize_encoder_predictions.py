@@ -16,7 +16,11 @@ from PIL import Image, ImageDraw
 
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import IGNORE_INDEX, EncoderOutput, PlantSample, TopologyRole
-from tomato_recon.data.processed import ProcessedPlantDataset
+from tomato_recon.data.processed import (
+    ProcessedPlantDataset,
+    normalise_dataset_selection,
+    processed_dataset_compatibility,
+)
 from tomato_recon.evaluation.encoder import EncoderMetricAccumulator, encoder_metrics_for_sample
 from tomato_recon.models.encoders.base import PointEncoder, encoder_losses
 from tomato_recon.models.encoders.registry import create_backbone_from_config
@@ -323,7 +327,9 @@ def _select_samples(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--checkpoint", type=Path, default=Path("outputs/stage1_ablation/kpconvx/best.ckpt")
+        "--checkpoint",
+        type=Path,
+        default=Path("outputs/stage1_benchmark/combined/kpconvx/best.ckpt"),
     )
     parser.add_argument(
         "--processed-root",
@@ -335,6 +341,10 @@ def main() -> None:
         default="test",
         help="Held-out split to visualize (default: test)",
     )
+    parser.add_argument(
+        "--dataset",
+        help="Source dataset ID, or 'combined'; defaults to the checkpoint selection",
+    )
     parser.add_argument("--count", type=int, default=3, help="Number of plants; use 0 for all")
     parser.add_argument(
         "--plant-id", action="append", default=[], help="Render this plant ID (repeatable)"
@@ -342,7 +352,7 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("outputs/stage1_ablation/kpconvx/test_visualizations"),
+        default=Path("outputs/stage1_benchmark/combined/kpconvx/test_visualizations"),
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--probability-threshold", type=float, default=0.5)
@@ -363,7 +373,12 @@ def main() -> None:
     cfg = OmegaConf.create(raw_checkpoint["config"])
     processed_root = args.processed_root or Path(str(cfg.data.processed_root))
     split = str(args.split)
-    dataset = ProcessedPlantDataset(processed_root, split=split)
+    dataset_selection = normalise_dataset_selection(
+        args.dataset or cfg.data.get("dataset", "combined")
+    )
+    dataset = ProcessedPlantDataset(
+        processed_root, split=split, dataset=dataset_selection
+    )
     if not len(dataset):
         raise ValueError(f"processed split {split!r} contains no samples at {processed_root}")
     samples = _select_samples(dataset, args.count, args.plant_id)
@@ -374,7 +389,10 @@ def main() -> None:
     checkpoint = load_checkpoint(
         args.checkpoint,
         model,
-        expected_preprocessing_hash=first.metadata.get("preprocessing_hash"),
+        expected_dataset_compatibility=processed_dataset_compatibility(
+            processed_root, dataset_selection
+        ),
+        allow_dataset_subset=True,
         expected_max_nodes=len(first.node_xyz),
     )
     device = _device(args.device)
@@ -394,6 +412,7 @@ def main() -> None:
         "checkpoint": str(args.checkpoint),
         "checkpoint_sha256": checkpoint_hash,
         "split": split,
+        "dataset": dataset_selection,
         "expected_plant_ids": [sample.plant_id for sample in samples],
         "renders": {},
     }
@@ -402,8 +421,6 @@ def main() -> None:
     )
     with torch.inference_mode():
         for index, sample in enumerate(samples, start=1):
-            if sample.metadata.get("preprocessing_hash") != checkpoint.get("preprocessing_hash"):
-                raise ValueError(f"preprocessing hash mismatch for plant {sample.plant_id}")
             batch = collate_plant_samples([sample]).to(device)
             output = model(
                 batch.xyz,
@@ -445,9 +462,9 @@ def main() -> None:
                 encoding="utf-8",
             )
             print(f"[{index}/{len(samples)}] wrote {output_path}", flush=True)
-            if os.environ.get("STAGE1_ABLATION_EVENTS") == "1":
+            if os.environ.get("STAGE1_BENCHMARK_EVENTS") == "1":
                 print(
-                    "@@STAGE1_EVENT@@"
+                    "@@STAGE1_BENCHMARK_EVENT@@"
                     + json.dumps(
                         {
                             "phase": "visualize",
@@ -466,6 +483,7 @@ def main() -> None:
         "checkpoint_epoch": int(checkpoint.get("epoch", -1)),
         "processed_root": str(processed_root),
         "split": split,
+        "dataset": dataset_selection,
         "sample_count": len(samples),
         "probability_threshold": args.probability_threshold,
         "skeleton_threshold_m": args.skeleton_threshold_m,

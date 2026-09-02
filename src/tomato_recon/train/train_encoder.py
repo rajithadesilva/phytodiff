@@ -22,14 +22,15 @@ from tomato_recon.train.common import (
     select_device,
     stage_output_dir,
     save_checkpoint,
+    training_dataset_compatibility,
     write_metrics,
     write_run_metadata,
 )
 
 
-def _ablation_event(**values: object) -> None:
-    if os.environ.get("STAGE1_ABLATION_EVENTS") == "1":
-        print("@@STAGE1_EVENT@@" + json.dumps(values, sort_keys=True), flush=True)
+def _benchmark_event(**values: object) -> None:
+    if os.environ.get("STAGE1_BENCHMARK_EVENTS") == "1":
+        print("@@STAGE1_BENCHMARK_EVENT@@" + json.dumps(values, sort_keys=True), flush=True)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -52,7 +53,9 @@ def main(argv: list[str] | None = None) -> None:
             known.resume,
             model,
             optimizer=optimizer,
-            expected_preprocessing_hash=batch.samples[0].metadata.get("preprocessing_hash"),
+            expected_dataset_compatibility=training_dataset_compatibility(
+                cfg, batch.samples[0]
+            ),
             expected_max_nodes=int(cfg.data.max_nodes),
         )
         start_epoch = int(checkpoint["epoch"]) + 1
@@ -139,7 +142,7 @@ def main(argv: list[str] | None = None) -> None:
                 epoch=epoch,
                 metrics=metrics,
             )
-        _ablation_event(
+        _benchmark_event(
             phase="train",
             epoch=epoch + 1,
             epoch_total=epoch_total,
@@ -148,7 +151,9 @@ def main(argv: list[str] | None = None) -> None:
     best_checkpoint = load_checkpoint(
         output_dir / "best.ckpt",
         model,
-        expected_preprocessing_hash=batch.samples[0].metadata.get("preprocessing_hash"),
+        expected_dataset_compatibility=training_dataset_compatibility(
+            cfg, batch.samples[0]
+        ),
         expected_max_nodes=int(cfg.data.max_nodes),
     )
     metrics = best_checkpoint["metrics"]

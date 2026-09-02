@@ -7,7 +7,12 @@ from tempfile import TemporaryDirectory
 
 import torch
 
-from scripts.run_stage1_ablation import AblationProgress, MODELS, _write_comparison
+from scripts.run_stage1_benchmark import (
+    DATASETS,
+    MODELS,
+    BenchmarkProgress,
+    _write_comparison,
+)
 from tomato_recon.evaluation.encoder import EncoderMetricAccumulator
 from tomato_recon.models.encoders.base import PointEncoder
 from tomato_recon.models.encoders.kpconvx import KPConvXAdapter
@@ -64,18 +69,21 @@ def test_overall_metric_formula() -> None:
     assert math.isclose(metrics["overall_score"], expected)
 
 
-def test_ablation_progress_is_monotonic_and_persisted() -> None:
+def test_benchmark_progress_is_monotonic_and_persisted() -> None:
     with TemporaryDirectory() as directory:
         path = Path(directory) / "progress.jsonl"
-        progress = AblationProgress(path, model_count=3)
-        progress.emit(0, "pointnext", "train", 0.45, "epoch 25/50", epoch=25)
-        progress.emit(0, "pointnext", "train", 0.90, "epoch 50/50", epoch=50)
-        progress.emit(0, "pointnext", "complete", 1.0, "complete", status="complete")
+        progress = BenchmarkProgress(path, run_count=12)
+        progress.emit(0, "tomatowur", "pointnext", "train", 0.45, "epoch 25/50", epoch=25)
+        progress.emit(0, "tomatowur", "pointnext", "train", 0.90, "epoch 50/50", epoch=50)
+        progress.emit(
+            0, "tomatowur", "pointnext", "complete", 1.0, "complete", status="complete"
+        )
         events = [json.loads(line) for line in path.read_text().splitlines()]
         percentages = [event["overall_percent"] for event in events]
         assert percentages == sorted(percentages)
-        assert math.isclose(percentages[-1], 100.0 / 3.0)
+        assert math.isclose(percentages[-1], 100.0 / 12.0)
         assert all("eta_seconds" in event and "timestamp" in event for event in events)
+        assert all(event["dataset"] == "tomatowur" for event in events)
 
 
 def test_comparison_outputs_rank_by_validation_and_link_visualizations() -> None:
@@ -95,19 +103,61 @@ def test_comparison_outputs_rank_by_validation_and_link_visualizations() -> None
 
     with TemporaryDirectory() as directory:
         output = Path(directory)
-        results = {
-            model: {
-                "status": "complete",
-                "training": {"best_epoch": index + 1},
-                "validation": {"split": "val", "metrics": metrics(0.5 + index * 0.1)},
-                "test": {"split": "test", "metrics": metrics(0.9 - index * 0.1)},
-            }
-            for index, model in enumerate(MODELS)
-        }
-        _write_comparison(output, results)
+        results = {}
+        combined_evaluations = {}
+        for dataset in DATASETS:
+            for index, model in enumerate(MODELS):
+                results[f"{dataset}/{model}"] = {
+                    "status": "complete",
+                    "dataset": dataset,
+                    "model": model,
+                    "training": {"best_epoch": index + 1},
+                    "validation": {
+                        "split": "val",
+                        "metrics": metrics(0.5 + index * 0.1),
+                    },
+                    "test": {
+                        "split": "test",
+                        "metrics": metrics(0.9 - index * 0.1),
+                    },
+                }
+                if dataset != "combined":
+                    combined_evaluations[f"{dataset}/{model}"] = {
+                        "status": "complete",
+                        "training_dataset": "combined",
+                        "evaluation_dataset": dataset,
+                        "model": model,
+                        "training": {"best_epoch": index + 1},
+                        "validation": {
+                            "split": "val",
+                            "sample_count": 2,
+                            "metrics": metrics(0.45 + index * 0.1),
+                        },
+                        "test": {
+                            "split": "test",
+                            "sample_count": 3,
+                            "metrics": metrics(0.75 - index * 0.1),
+                        },
+                    }
+        _write_comparison(output, results, combined_evaluations)
         report = json.loads((output / "comparison.json").read_text())
-        assert report["winner"] == "kpconvx"
+        assert report["combined_winner"] == "kpconvx"
+        assert report["aggregate_winner"] == "kpconvx"
+        assert report["datasets"]["pheno4d"]["winner"] == "kpconvx"
+        assert (
+            report["combined_models_by_dataset"]["kpconvx"]["pheno4d"]["status"]
+            == "complete"
+        )
         assert report["test_used_for_selection"] is False
-        assert "kpconvx/test_visualizations/" in (output / "comparison.md").read_text()
-        for name in ("comparison.csv", "overall_scores.png", "task_metrics.png"):
+        assert "combined/kpconvx/test_visualizations/" in (
+            output / "comparison.md"
+        ).read_text()
+        comparison_csv = (output / "comparison.csv").read_text()
+        assert "training_dataset,evaluation_dataset" in comparison_csv
+        assert "combined,pheno4d" in comparison_csv
+        for name in (
+            "comparison.csv",
+            "overall_scores.png",
+            "combined_models_by_dataset.png",
+        ):
             assert (output / name).is_file()

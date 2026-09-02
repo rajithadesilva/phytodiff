@@ -20,7 +20,7 @@ STAGE_CONFIGS = {
     "diffusion": "diffusion/default.yaml",
     "graph": "graph/default.yaml",
     "parametric": "parametric/default.yaml",
-    "joint": "experiment/tomatowur_stage1_K256.yaml",
+    "joint": "experiment/combined_stage1_K256.yaml",
     "infer": "infer.yaml",
     "smoke": "smoke/all.yaml",
 }
@@ -48,7 +48,7 @@ def load_config(
     known, overrides = _parse_cli(argv)
     root = repository_root()
     base = OmegaConf.load(root / "configs/config.yaml")
-    data = OmegaConf.load(root / "configs/data/tomatowur_v3.yaml")
+    data = OmegaConf.load(root / "configs/data/combined.yaml")
     cfg = OmegaConf.merge(base, {"data": data})
     stage_relative = STAGE_CONFIGS.get(stage, f"{stage}/default.yaml")
     stage_path = root / "configs" / stage_relative
@@ -75,6 +75,9 @@ def load_config(
 
 
 def validate_config(cfg: DictConfig, stage: str | None = None) -> None:
+    from tomato_recon.data.processed import normalise_dataset_selection
+
+    cfg.data.dataset = normalise_dataset_selection(cfg.data.get("dataset", "combined"))
     if int(cfg.data.max_nodes) <= 1:
         raise ValueError("data.max_nodes must be greater than one")
     diffusion_k = int(cfg.model.diffusion.max_nodes)

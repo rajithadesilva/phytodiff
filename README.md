@@ -16,7 +16,7 @@ source dataset adapters -> deterministic canonical fixed-K cache -> point encode
 - Typed contracts for samples, encoder output, skeleton predictions, graphs, organ parameters, geometry, and export reports.
 - Source-specific adapters for TomatoWUR v3, complete TomatoPGT v1 scans, and annotated Pheno4D tomato scans. Every point cloud becomes one globally numbered instance in the same flat `data/dataset/` directory.
 - Official TomatoWUR ground-truth skeleton preservation, TomatoPGT graph-path conversion, and deterministic Pheno4D centreline reconstruction from its manual stem/leaf instances.
-- Configurable PointNeXt-style default backbone plus lazy Pointcept PTv3, Sonata-PTv3, and LitePT adapters with actionable dependency errors.
+- KPConvX is the default Stage 1 backbone, with PointNeXt and Sonata-PTv3 available as explicit alternatives with actionable dependency/checkpoint errors.
 - Six-dimensional fixed-K diffusion over XYZ and parent flow, with existence/confidence heads, duplicate/bounds losses, FPS initialization, DDIM sampling, flow normalization, and NMS.
 - Separate organ/role/visibility heads, sparse k-nearest parent scoring, hard botanical masks, root selection, maximum directed spanning arborescence, and main-stem continuity.
 - Cubic spline, parallel-transport frames, tapered tube, leaf width-profile, and optional confidence-gated fruit geometry in PyTorch.
@@ -108,32 +108,83 @@ Expected: one root-centred, three-view PNG per completed point-cloud instance. W
 
 ### 5. Train Stage 1: point encoder
 
-Prerequisite: verified caches. Stage 1 exposes `pointnext`, `sonata_ptv3` (default),
-and `kpconvx`. Prepare the pinned Sonata checkpoint once with
+Prerequisite: verified caches. Stage 1 exposes `pointnext`, `sonata_ptv3`, and
+`kpconvx` (default). Prepare the pinned Sonata checkpoint once with
 `make prepare-stage1-models`.
+
+Train the default encoder on every training instance from all three sources:
 
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
-  python -m tomato_recon.train.train_encoder --config-name encoder
-python -c "import torch; c=torch.load('outputs/encoder/best.ckpt', map_location='cpu', weights_only=False); print(c['stage'], c['metrics'])"
+  python -m tomato_recon.train.train_encoder --config-name encoder \
+  data.dataset=combined output.dir=outputs/encoder/combined
+python -c "import torch; c=torch.load('outputs/encoder/combined/best.ckpt', map_location='cpu', weights_only=False); print(c['stage'], c['dataset_compatibility'], c['metrics'])"
 ```
 
-Expected: `outputs/encoder/best.ckpt`, `outputs/encoder/last.ckpt`, resolved config,
-environment/git state, metrics, and a cached validation prediction. `best.ckpt` is
+Set `data.dataset` to a source ID to train on only that source while preserving its
+train/validation/test split. Always use a separate output directory so one run cannot
+overwrite another:
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.train.train_encoder --config configs/encoder/kpconvx.yaml \
+  data.dataset=tomatowur output.dir=outputs/encoder/tomatowur
+
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.train.train_encoder --config configs/encoder/kpconvx.yaml \
+  data.dataset=tomatopgt output.dir=outputs/encoder/tomatopgt
+
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.train.train_encoder --config configs/encoder/kpconvx.yaml \
+  data.dataset=pheno4d output.dir=outputs/encoder/pheno4d
+```
+
+Valid selectors are `tomatowur`, `tomatopgt`, `pheno4d`, and `combined`. Selection is
+performed from the source metadata in the shared flat manifest; no source-specific
+subdirectories are created. Checkpoints record a deterministic compatibility signature
+covering every selected source/preprocessing hash, so combined checkpoints no longer
+depend on whichever plant happened to be sampled when they were saved.
+
+Expected: `best.ckpt`, `last.ckpt`, resolved config, environment/git state, metrics,
+and a cached validation prediction under the selected output directory. `best.ckpt` is
 selected by the weighted validation overall score; test plants are never loaded by
 training.
 
-To train and compare all three encoders with live overall progress and complete test
-visualizations, run `make stage1-ablation`. Resume with
-`make stage1-ablation STAGE1_ABLATION_RESUME=--resume`.
+The former Stage 1 ablation is now the Stage 1 benchmark. It trains all three encoders
+on each individual dataset and on the combined dataset: 12 independent training runs.
+Each combined-trained checkpoint is then evaluated separately on TomatoWUR, TomatoPGT,
+and Pheno4D, adding nine evaluation-only runs without retraining.
 
-After model selection is frozen, render all five test plants once:
+```bash
+make stage1-benchmark
+make stage1-benchmark STAGE1_BENCHMARK_RESUME=--resume
+```
+
+Completed `run_complete.json` entries are always skipped. Therefore, rerunning the first
+command after completing the original 12-run benchmark performs only the new per-source
+evaluations. Use the second command when an unfinished training run should resume from
+its `last.ckpt`.
+
+Results are written to `outputs/stage1_benchmark/<dataset>/<model>/`. The root
+`comparison.json`, `comparison.csv`, and `comparison.md` report every validation and
+held-out test metric, per-dataset rankings/winners, the combined-dataset winner, and
+the cross-dataset mean validation ranking. They also report each combined-trained model
+on each individual source; the corresponding raw metrics are stored under
+`combined/<model>/by_dataset/<dataset>/`. `overall_scores.png` compares matched training
+runs, `combined_models_by_dataset.png` compares the new per-source evaluations, and
+`progress.jsonl` is the durable live-progress record. To run a subset directly, pass for
+example `--datasets pheno4d combined --models kpconvx pointnext` to
+`scripts/run_stage1_benchmark.py`.
+
+To render the combined KPConvX benchmark test set again:
 
 ```bash
 make visualize-stage1-test
 ```
 
-Expected: six-panel prediction/target previews and test metrics in `outputs/encoder/test_visualizations`. Do not use these test results to tune training settings or thresholds.
+Expected: six-panel prediction/target previews and test metrics in
+`outputs/stage1_benchmark/combined/kpconvx/test_visualizations`. Do not use these test
+results to tune training settings or thresholds.
 
 ### 6. Cache encoder features or predictions
 
@@ -141,7 +192,8 @@ Prerequisite: Stage 1 checkpoint and prediction file.
 
 ```bash
 python scripts/cache_stage_predictions.py --stage encoder \
-  --checkpoint outputs/encoder/best.ckpt --input outputs/encoder/smoke_predictions.pt \
+  --checkpoint outputs/stage1_benchmark/combined/kpconvx/best.ckpt \
+  --input outputs/stage1_benchmark/combined/kpconvx/smoke_predictions.pt \
   --output outputs/cache/encoder
 python -c "import json; print(json.load(open('outputs/cache/encoder/manifest.json')))"
 ```
@@ -155,7 +207,8 @@ Prerequisite: Stage 1 best checkpoint and matching preprocessing hash/K.
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_diffusion --config-name diffusion \
-  model.encoder.checkpoint=outputs/encoder/best.ckpt
+  data.dataset=combined \
+  model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt
 python -c "import torch; p=torch.load('outputs/diffusion/smoke_predictions.pt', weights_only=False); print(p['valid_mask'].sum(dim=1), p['confidence'].mean())"
 ```
 
@@ -181,7 +234,8 @@ Prerequisite: encoder/diffusion checkpoints. The curriculum starts on ground-tru
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_graph --config-name graph \
-  model.encoder.checkpoint=outputs/encoder/best.ckpt \
+  data.dataset=combined \
+  model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt \
   model.diffusion.checkpoint=outputs/diffusion/best.ckpt
 python -c "import json; g=json.load(open('outputs/graph/smoke_graph.json')); print(g['root_node_id'], len(g['nodes']), len(g['edges']))"
 ```
@@ -208,7 +262,8 @@ Prerequisite: best checkpoints from Stages 1–4 with matching preprocessing has
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_joint --config-name joint \
-  model.encoder.checkpoint=outputs/encoder/best.ckpt \
+  data.dataset=combined \
+  model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt \
   model.diffusion.checkpoint=outputs/diffusion/best.ckpt \
   model.graph.checkpoint=outputs/graph/best.ckpt \
   model.parametric.checkpoint=outputs/parametric/best.ckpt
@@ -261,10 +316,10 @@ Expected: a valid `/World/TomatoPlant`, metres-per-unit 1.0, Z-up, non-empty mes
 Prerequisite: the frozen run, metrics, and validation reports.
 
 ```bash
-tar -czf outputs/tomatowur_experiment_archive.tar.gz \
-  configs outputs/encoder outputs/diffusion outputs/graph outputs/parametric \
+tar -czf outputs/combined_experiment_archive.tar.gz \
+  configs outputs/stage1_benchmark outputs/encoder outputs/diffusion outputs/graph outputs/parametric \
   outputs/joint outputs/evaluation outputs/inference
-tar -tzf outputs/tomatowur_experiment_archive.tar.gz | head
+tar -tzf outputs/combined_experiment_archive.tar.gz | head
 ```
 
 Expected: resolved YAML, checkpoints and hashes, metrics, environment/git state, manifests/splits, per-sample predictions, USD reports, and the recorded container digest. Do not add the archive to git.
@@ -284,7 +339,7 @@ outputs/inference/<plant_id>/
 
 ## Configuration and checkpoints
 
-All CLIs accept stable dot-list overrides after `--config-name` or `--config`. Every run records `resolved_config.yaml`, `environment.json`, and `git_state.json`. Checkpoints store model/optimizer state, stage, epoch, resolved config, label map, preprocessing hash, K, git commit, metrics, and upstream checkpoint hashes. Loading fails on preprocessing-hash or K mismatches.
+All CLIs accept stable dot-list overrides after `--config-name` or `--config`. Every run records `resolved_config.yaml`, `environment.json`, and `git_state.json`. Checkpoints store model/optimizer state, stage, epoch, resolved config, label map, the selected dataset compatibility signature, K, git commit, metrics, and upstream checkpoint hashes. Loading fails on dataset/preprocessing-contract or K mismatches.
 
 See [data documentation](docs/DATA.md), [training details](docs/TRAINING.md), [model contracts](docs/MODEL_CONTRACTS.md), and [USD export](docs/USD_EXPORT.md).
 

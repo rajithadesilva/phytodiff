@@ -34,10 +34,11 @@ Every training stage reports epoch and batch progress, running component losses,
 
 ## 5. Train Stage 1 encoder
 
-- Prerequisite: verified caches and `make prepare-stage1-models` for the default Sonata backbone.
-- Command: `python -m tomato_recon.train.train_encoder --config-name encoder`.
+- Prerequisite: verified caches and `make prepare-stage1-models` when running Sonata.
+- Combined command: `python -m tomato_recon.train.train_encoder --config-name encoder data.dataset=combined output.dir=outputs/encoder/combined`.
+- Individual command: replace `combined` with `tomatowur`, `tomatopgt`, or `pheno4d` and use a distinct output directory.
 - Supported encoders: `pointnext`, `sonata_ptv3`, and `kpconvx`.
-- Expected: `outputs/encoder/best.ckpt`, `last.ckpt`, metrics, run metadata, and `smoke_predictions.pt`. Training uses only `train`, validates on `val`, and selects `best.ckpt` by validation overall score.
+- Expected: the selected output directory contains `best.ckpt`, `last.ckpt`, metrics, run metadata, and `smoke_predictions.pt`. Training uses only `train`, validates on `val`, and selects `best.ckpt` by validation overall score.
 - Verify: inspect `val_semantic_miou`, validation skeleton precision/recall, centreline offset MAE, junction F1, and checkpoint stage/hash/K fields. The test split is not loaded during training or checkpoint selection.
 
 Visualise predictions from the trained Stage 1 checkpoint:
@@ -45,30 +46,36 @@ Visualise predictions from the trained Stage 1 checkpoint:
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
   python scripts/visualize_encoder_predictions.py \
-  --checkpoint outputs/encoder/best.ckpt \
+  --checkpoint outputs/encoder/combined/best.ckpt \
   --processed-root data/dataset \
-  --split test --count 3 \
-  --output outputs/encoder/test_visualizations
+  --split test --dataset combined --count 3 \
+  --output outputs/encoder/combined/test_visualizations
 ```
 
-Run the complete three-model ablation, live global progress, held-out evaluation, and
-all test-plant visualizations with `make stage1-ablation`.
+Run the complete 12-training-run model-by-dataset benchmark, live global progress,
+held-out evaluation, and all test-plant visualizations with `make stage1-benchmark`.
+The combined-trained checkpoint for each model is additionally evaluated on each of the
+three source datasets. Completed runs are skipped automatically, so an existing benchmark
+only performs missing evaluations. Reports are written as JSON, CSV, Markdown, and charts
+under `outputs/stage1_benchmark/`.
 
 Each plant PNG contains six front-view panels: input RGB, ground-truth semantics, predicted semantics, ground-truth skeleton, predicted skeleton probability with offset-corrected centreline points, and predicted junction probability. Cyan rings in the junction panel mark ground-truth junctions. The command defaults to `test` and writes `metrics.json` for the selected plants. Use `--plant-id PLANT_ID` (repeatable) to select exact plants, `--count 0` for all 5 test plants, or `--device cpu` to disable GPU inference. Run this only after model selection is complete.
 
-The combined cache retains the official plant-level split: 35 train, 4 validation, and 5 test plants. Do not move plants between partitions, use test previews to tune thresholds, or repeatedly choose models using test results.
+Every source retains its plant-level split. The combined selector is the union of those
+source splits. Do not move plants between partitions, use test previews to tune thresholds,
+or repeatedly choose models using test results.
 
 ## 6. Cache encoder predictions
 
 - Prerequisite: Stage 1 output.
-- Command: `python scripts/cache_stage_predictions.py --stage encoder --checkpoint outputs/encoder/best.ckpt --input outputs/encoder/smoke_predictions.pt --output outputs/cache/encoder`.
+- Command: `python scripts/cache_stage_predictions.py --stage encoder --checkpoint outputs/stage1_benchmark/combined/kpconvx/best.ckpt --input outputs/stage1_benchmark/combined/kpconvx/smoke_predictions.pt --output outputs/cache/encoder`.
 - Expected: prediction file plus a manifest tied to its checkpoint SHA-256.
 - Verify: recalculate or inspect both hashes in `outputs/cache/encoder/manifest.json`.
 
 ## 7. Train Stage 2 diffusion
 
 - Prerequisite: compatible encoder checkpoint.
-- Command: `python -m tomato_recon.train.train_diffusion --config-name diffusion model.encoder.checkpoint=outputs/encoder/best.ckpt`.
+- Command: `python -m tomato_recon.train.train_diffusion --config-name diffusion data.dataset=combined model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt`.
 - Expected: `outputs/diffusion/best.ckpt`, component losses, and predicted fixed-K node sets.
 - Verify: inspect denoising/existence/flow/duplicate/bounds losses, retained counts, confidence, and unit/zero parent-flow norms.
 
@@ -82,7 +89,7 @@ The combined cache retains the official plant-level split: 35 train, 4 validatio
 ## 9. Train Stage 3 graph
 
 - Prerequisite: encoder and diffusion checkpoints/predictions.
-- Command: `python -m tomato_recon.train.train_graph --config-name graph model.encoder.checkpoint=outputs/encoder/best.ckpt model.diffusion.checkpoint=outputs/diffusion/best.ckpt`.
+- Command: `python -m tomato_recon.train.train_graph --config-name graph data.dataset=combined model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt model.diffusion.checkpoint=outputs/diffusion/best.ckpt`.
 - Expected: `outputs/graph/best.ckpt` and `smoke_graph.json`; the curriculum moves from clean ground-truth nodes through perturbed/predicted-node conditions.
 - Verify: one root, one connected component, zero cycles, `edges = nodes - 1`, valid types, and a continuous main-stem path.
 
@@ -96,7 +103,7 @@ The combined cache retains the official plant-level split: 35 train, 4 validatio
 ## 11. Joint fine-tune
 
 - Prerequisite: compatible best checkpoints from Stages 1–4.
-- Command: `python -m tomato_recon.train.train_joint --config-name joint model.encoder.checkpoint=outputs/encoder/best.ckpt model.diffusion.checkpoint=outputs/diffusion/best.ckpt model.graph.checkpoint=outputs/graph/best.ckpt model.parametric.checkpoint=outputs/parametric/best.ckpt`.
+- Command: `python -m tomato_recon.train.train_joint --config-name joint data.dataset=combined model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt model.diffusion.checkpoint=outputs/diffusion/best.ckpt model.graph.checkpoint=outputs/graph/best.ckpt model.parametric.checkpoint=outputs/parametric/best.ckpt`.
 - Expected: `outputs/joint/best.ckpt`, upstream checkpoint hashes, `staged_validation.json`, component metrics, and `smoke_visibility_weights.pt`.
 - Verify: inspect occlusion-aware geometry, normal, skeleton, parameter, and radius losses; confirm the discrete decoder has no gradient and the conservative learning rate is resolved.
 
@@ -124,7 +131,7 @@ The combined cache retains the official plant-level split: 35 train, 4 validatio
 ## 15. Archive the run
 
 - Prerequisite: final metrics and validation.
-- Command: `tar -czf outputs/tomatowur_experiment_archive.tar.gz configs outputs/encoder outputs/diffusion outputs/graph outputs/parametric outputs/joint outputs/evaluation outputs/inference`.
+- Command: `tar -czf outputs/combined_experiment_archive.tar.gz configs outputs/stage1_benchmark outputs/encoder outputs/diffusion outputs/graph outputs/parametric outputs/joint outputs/evaluation outputs/inference`.
 - Expected: configs, environment/git state, container digest record, manifests/splits, seeds, checkpoint dependencies, metrics, and per-sample predictions.
 - Verify: inspect with `tar -tzf ...`; keep the archive, data, weights, and secrets outside git.
 
