@@ -268,11 +268,23 @@ To render the combined KPConvX benchmark test set again:
 
 ```bash
 make visualize-stage1-test
+# Feed the saved top-down partial clouds to the same encoder checkpoint:
+make visualize-stage1-test STAGE1_PCL_TYPE=top_down
 ```
 
 Expected: six-panel prediction/target previews and test metrics in
-`outputs/stage1_benchmark/combined/kpconvx/test_visualizations`. Do not use these test
-results to tune training settings or thresholds.
+`outputs/stage1_benchmark/combined/kpconvx/test_visualizations` for `STAGE1_PCL_TYPE=full`
+(the default), or `test_visualizations_top_down` for `STAGE1_PCL_TYPE=top_down`.
+Both commands run in Docker; `STAGE1_VIS_OUTPUT` can override the output directory.
+The underlying script accepts `--pcl-type full|top_down`.
+
+The selected cloud is used for encoder inference, metrics, and all six panels.
+Top-down input retains the labels of its saved points and uses the full plant's
+ground-truth skeleton; point metrics cover only the retained input points. The
+checkpoint is evaluated as-is. PNG headers, `metrics.json`, and
+`visualization_manifest.json` identify the PCL type. Missing or stale partial
+clouds produce an error; run `make generate-top-down` to create or refresh them.
+Do not use these test results to tune training settings or thresholds.
 
 ### 6. Cache encoder features or predictions
 

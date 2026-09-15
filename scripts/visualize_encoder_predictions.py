@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from tomato_recon.data.processed import (
     normalise_dataset_selection,
     processed_dataset_compatibility,
 )
+from tomato_recon.data.top_down import load_top_down_sample
 from tomato_recon.evaluation.encoder import EncoderMetricAccumulator, encoder_metrics_for_sample
 from tomato_recon.models.encoders.base import PointEncoder, encoder_losses
 from tomato_recon.models.encoders.registry import create_backbone_from_config
@@ -154,7 +156,11 @@ def render_encoder_prediction(
         "RGB", (panel_size * len(titles), header + panel_size + footer), "white"
     )
     draw = ImageDraw.Draw(canvas)
-    draw.text((12, 9), f"Stage 1 encoder | {sample.plant_id} | front X-Z", fill=(20, 20, 20))
+    draw.text(
+        (12, 9), f"Stage 1 encoder | {sample.plant_id} | "
+        f"PCL: {sample.metadata.get('pcl_type', 'full')} | front X-Z",
+        fill=(20, 20, 20),
+    )
     draw.text(
         (12, 31),
         f"semantic mIoU {metrics['semantic_miou']:.3f} | "
@@ -308,20 +314,31 @@ def render_encoder_prediction(
 
 
 def _select_samples(
-    dataset: ProcessedPlantDataset, count: int, plant_ids: list[str]
+    dataset: ProcessedPlantDataset, count: int, plant_ids: list[str],
+    pcl_type: str = "full",
 ) -> list[PlantSample]:
+    if pcl_type not in {"full", "top_down"}:
+        raise ValueError("pcl_type must be 'full' or 'top_down'")
     if plant_ids:
         requested = set(plant_ids)
-        samples = [dataset[index] for index in range(len(dataset))]
-        selected = [sample for sample in samples if sample.plant_id in requested]
-        missing = requested - {sample.plant_id for sample in selected}
+        selected = [index for index, entry in enumerate(dataset.instances)
+                    if entry["plant_id"] in requested]
+        missing = requested - {dataset.instances[index]["plant_id"] for index in selected}
         if missing:
             raise ValueError(f"plant IDs not found in selected split: {sorted(missing)}")
-        return selected
-    if count < 0:
-        raise ValueError("--count must be zero (all plants) or a positive integer")
-    selected_count = len(dataset) if count == 0 else min(count, len(dataset))
-    return [dataset[index] for index in range(selected_count)]
+    else:
+        if count < 0:
+            raise ValueError("--count must be zero (all plants) or a positive integer")
+        selected = list(range(len(dataset) if count == 0 else min(count, len(dataset))))
+    samples = []
+    for index in selected:
+        sample = dataset[index]
+        if pcl_type == "top_down":
+            sample = load_top_down_sample(dataset.paths[index], sample)
+        else:
+            sample = replace(sample, metadata={**sample.metadata, "pcl_type": "full"})
+        samples.append(sample)
+    return samples
 
 
 def main() -> None:
@@ -347,18 +364,25 @@ def main() -> None:
     )
     parser.add_argument("--count", type=int, default=3, help="Number of plants; use 0 for all")
     parser.add_argument(
+        "--pcl-type", choices=("full", "top_down"), default="full",
+        help="Point cloud used for encoder inference, metrics, and rendering (default: full)",
+    )
+    parser.add_argument(
         "--plant-id", action="append", default=[], help="Render this plant ID (repeatable)"
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("outputs/stage1_benchmark/combined/kpconvx/test_visualizations"),
+        help="Output directory; top_down defaults to test_visualizations_top_down",
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--probability-threshold", type=float, default=0.5)
     parser.add_argument("--skeleton-threshold-m", type=float, default=0.006)
     parser.add_argument("--max-render-points", type=int, default=50_000)
     args = parser.parse_args()
+    if args.output is None:
+        suffix = "_top_down" if args.pcl_type == "top_down" else ""
+        args.output = Path(f"outputs/stage1_benchmark/combined/kpconvx/test_visualizations{suffix}")
 
     if not 0 <= args.probability_threshold <= 1:
         raise ValueError("--probability-threshold must lie in [0, 1]")
@@ -381,7 +405,7 @@ def main() -> None:
     )
     if not len(dataset):
         raise ValueError(f"processed split {split!r} contains no samples at {processed_root}")
-    samples = _select_samples(dataset, args.count, args.plant_id)
+    samples = _select_samples(dataset, args.count, args.plant_id, args.pcl_type)
 
     first = samples[0]
     backbone = create_backbone_from_config(cfg.model.encoder)
@@ -413,6 +437,7 @@ def main() -> None:
         "checkpoint_sha256": checkpoint_hash,
         "split": split,
         "dataset": dataset_selection,
+        "pcl_type": args.pcl_type,
         "expected_plant_ids": [sample.plant_id for sample in samples],
         "renders": {},
     }
@@ -456,7 +481,10 @@ def main() -> None:
             manifest["renders"][sample.plant_id] = {
                 "path": str(output_path),
                 "status": "complete",
+                "point_count": int(sample.point_valid.sum()),
             }
+            if args.pcl_type == "top_down":
+                manifest["renders"][sample.plant_id]["top_down"] = sample.metadata["top_down"]
             manifest_path.write_text(
                 json.dumps(manifest, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
@@ -485,6 +513,7 @@ def main() -> None:
         "split": split,
         "dataset": dataset_selection,
         "sample_count": len(samples),
+        "pcl_type": args.pcl_type,
         "probability_threshold": args.probability_threshold,
         "skeleton_threshold_m": args.skeleton_threshold_m,
         "aggregate": accumulator.compute(),

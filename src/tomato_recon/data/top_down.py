@@ -6,12 +6,15 @@ import hashlib
 import json
 import tempfile
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from scipy.spatial import cKDTree
+
+if TYPE_CHECKING:
+    from tomato_recon.data.schemas import PlantSample
 
 ALGORITHM_VERSION = "xy-footprint-v1"
 POINT_FIELDS = ("xyz", "rgb", "normals", "semantic", "instance", "point_valid")
@@ -176,6 +179,42 @@ def ensure_top_down(
             temporary_path.unlink(missing_ok=True)
     entry["top_down"] = {**contract, **stats, "cache_sha256": output_hash}
     return "generated"
+
+
+def load_top_down_sample(source_path: Path, sample: PlantSample) -> PlantSample:
+    """Pair saved partial input points with the full sample's reconstruction targets."""
+    import torch
+
+    path = source_path.with_name("top_down.npz")
+    if not path.is_file():
+        raise FileNotFoundError(f"missing {path}; run make generate-top-down first")
+    with np.load(path, allow_pickle=False) as cloud:
+        metadata = json.loads(cloud["metadata_json"].item())
+        if metadata["top_down"]["source_cache_sha256"] != file_sha256(source_path):
+            raise ValueError(f"{path} is stale; rerun make generate-top-down")
+        if str(cloud["plant_id"].item()) != sample.plant_id:
+            raise ValueError(f"{path} belongs to a different plant")
+        indices = cloud["source_point_indices"]
+        if (
+            indices.ndim != 1 or not np.issubdtype(indices.dtype, np.integer)
+            or len(indices) == 0 or indices.min() < 0 or indices.max() >= len(sample.xyz)
+            or not np.all(np.diff(indices) > 0)
+        ):
+            raise ValueError(f"{path} has invalid source point indices")
+        rows = torch.from_numpy(indices.astype(np.int64))
+        values = {name: torch.from_numpy(cloud[name]) for name in POINT_FIELDS}
+        for name, value in values.items():
+            if not torch.equal(value, getattr(sample, name)[rows]):
+                raise ValueError(f"{path}: {name} does not match the full cloud; regenerate it")
+        if not bool(values["point_valid"].all()):
+            raise ValueError(f"{path} contains invalid source points")
+    partial = replace(
+        sample, **values,
+        metadata={**sample.metadata, **metadata, "pcl_type": "top_down",
+                  "source_point_indices": rows.tolist()},
+    )
+    partial.validate()
+    return partial
 
 
 def generate_top_down_dataset(
