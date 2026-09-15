@@ -11,14 +11,18 @@ import torch
 from omegaconf import OmegaConf
 
 from tomato_recon.data.processed import (
-    ProcessedPlantDataset,
     normalise_dataset_selection,
     processed_dataset_compatibility,
 )
 from tomato_recon.evaluation.encoder import evaluate_encoder_model
 from tomato_recon.models.encoders.base import PointEncoder
 from tomato_recon.models.encoders.registry import create_backbone_from_config
-from tomato_recon.train.common import create_split_loader, load_checkpoint
+from tomato_recon.train.common import (
+    create_point_cloud_dataset,
+    create_split_loader,
+    load_checkpoint,
+    selected_point_cloud_type,
+)
 
 
 def main() -> None:
@@ -49,9 +53,7 @@ def main() -> None:
     cfg.trainer.batch_size = 1
     cfg.trainer.num_workers = 0
     cfg.trainer.fast_dev_run = False
-    dataset = ProcessedPlantDataset(
-        args.processed_root, split=args.split, dataset=dataset_selection
-    )
+    dataset = create_point_cloud_dataset(cfg, args.split)
     if not len(dataset):
         raise ValueError(f"split {args.split!r} is empty at {args.processed_root}")
     first = dataset[0]
@@ -65,6 +67,7 @@ def main() -> None:
         expected_dataset_compatibility=processed_dataset_compatibility(
             args.processed_root, dataset_selection
         ),
+        expected_pcl_type=selected_point_cloud_type(cfg),
         allow_dataset_subset=True,
         expected_max_nodes=len(first.node_xyz),
     )
@@ -87,6 +90,7 @@ def main() -> None:
         "training_dataset": training_dataset,
         "dataset": dataset_selection,
         "evaluation_dataset": dataset_selection,
+        "pcl_type": selected_point_cloud_type(cfg),
         "sample_count": len(dataset),
         "checkpoint": str(args.checkpoint),
         "checkpoint_epoch": int(checkpoint.get("epoch", -1)) + 1,

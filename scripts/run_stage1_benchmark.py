@@ -17,7 +17,11 @@ from typing import Any, Callable
 import torch
 from PIL import Image, ImageDraw
 
-from tomato_recon.data.processed import ProcessedPlantDataset
+from tomato_recon.data.processed import (
+    POINT_CLOUD_TYPES,
+    ProcessedPlantDataset,
+    normalise_point_cloud_type,
+)
 from tomato_recon.models.encoders.registry import ensure_backbone_available
 from tomato_recon.models.pretrained import verify_sonata_checkpoint
 
@@ -112,6 +116,11 @@ def _run(command: list[str], event_handler: Callable[[dict[str, Any]], None] | N
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _recorded_pcl_type(values: dict[str, Any]) -> str:
+    """Read new benchmark metadata while treating older runs as full-cloud runs."""
+    return normalise_point_cloud_type(values.get("pcl_type", "full"))
 
 
 def _visualizations_complete(path: Path, expected_ids: list[str]) -> bool:
@@ -492,6 +501,12 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("outputs/stage1_benchmark"))
     parser.add_argument("--max-epochs", type=int, default=50)
     parser.add_argument(
+        "--pcl-type",
+        choices=POINT_CLOUD_TYPES,
+        default="full",
+        help="Point clouds used for training and evaluation (default: full)",
+    )
+    parser.add_argument(
         "--datasets", nargs="+", choices=DATASETS, default=list(DATASETS)
     )
     parser.add_argument("--models", nargs="+", choices=MODELS, default=list(MODELS))
@@ -548,6 +563,11 @@ def main() -> None:
         complete_path = model_output / "run_complete.json"
         if complete_path.is_file():
             result = _read_json(complete_path)
+            if _recorded_pcl_type(result) != args.pcl_type:
+                raise ValueError(
+                    f"{model_output} contains a {_recorded_pcl_type(result)!r} point-cloud "
+                    f"run; choose a separate --output for {args.pcl_type!r}"
+                )
             results[key] = result
             progress.emit(
                 run_index,
@@ -563,6 +583,13 @@ def main() -> None:
         try:
             training_marker = model_output / "training_complete.json"
             checkpoint = model_output / "best.ckpt"
+            if args.resume and training_marker.is_file():
+                marker = _read_json(training_marker)
+                if _recorded_pcl_type(marker) != args.pcl_type:
+                    raise ValueError(
+                        f"{model_output} contains a {_recorded_pcl_type(marker)!r} "
+                        f"point-cloud run; choose a separate --output for {args.pcl_type!r}"
+                    )
             if not (args.resume and training_marker.is_file() and checkpoint.is_file()):
                 progress.emit(
                     run_index,
@@ -581,6 +608,7 @@ def main() -> None:
                     f"configs/encoder/{model}.yaml",
                     f"data.processed_root={args.processed_root}",
                     f"data.dataset={dataset}",
+                    f"data.pcl_type={args.pcl_type}",
                     f"output.dir={model_output}",
                     f"trainer.max_epochs={args.max_epochs}",
                     "trainer.batch_size=1",
@@ -608,7 +636,14 @@ def main() -> None:
 
                 _run(command, training_event)
                 training_marker.write_text(
-                    json.dumps({"status": "complete", "checkpoint": str(checkpoint)}, indent=2)
+                    json.dumps(
+                        {
+                            "status": "complete",
+                            "checkpoint": str(checkpoint),
+                            "pcl_type": args.pcl_type,
+                        },
+                        indent=2,
+                    )
                     + "\n",
                     encoding="utf-8",
                 )
@@ -716,6 +751,7 @@ def main() -> None:
                 "status": "complete",
                 "dataset": dataset,
                 "model": model,
+                "pcl_type": args.pcl_type,
                 "checkpoint": str(checkpoint),
                 "training": training,
                 "validation": _read_json(validation_path),

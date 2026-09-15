@@ -10,11 +10,14 @@ DATASET_VIS_ELEVATION_DEG ?= 15
 
 STAGE1_CHECKPOINT ?= outputs/stage1_benchmark/combined/kpconvx/best.ckpt
 STAGE1_PROCESSED_ROOT ?= data/dataset
-STAGE1_PCL_TYPE ?= full #top_down
+# Visualization: full or top_down.
+STAGE1_PCL_TYPE ?= full
 STAGE1_VIS_OUTPUT ?= outputs/stage1_benchmark/combined/kpconvx/test_visualizations$(if $(filter top_down,$(STAGE1_PCL_TYPE)),_top_down,)
 STAGE1_BENCHMARK_OUTPUT ?= outputs/stage1_benchmark
 STAGE1_EPOCHS ?= 50
 STAGE1_BENCHMARK_RESUME ?=
+# Training and evaluation: full, top_down, or both.
+STAGE1_TRAIN_PCL_TYPE ?= full
 
 install:
 	python -m pip install -e ".[dev]"
@@ -55,6 +58,7 @@ stage1-benchmark:
 		python -u scripts/run_stage1_benchmark.py \
 		--processed-root $(STAGE1_PROCESSED_ROOT) \
 		--output $(STAGE1_BENCHMARK_OUTPUT) \
+		--pcl-type "$(STAGE1_TRAIN_PCL_TYPE)" \
 		--max-epochs $(STAGE1_EPOCHS) $(STAGE1_BENCHMARK_RESUME)
 
 visualize-stage1-test:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -31,6 +32,7 @@ _DATASET_ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _PLANT_FOLDER = re.compile(r"^plant_(\d+)$")
 COMBINED_DATASET = "combined"
+POINT_CLOUD_TYPES = ("full", "top_down", "both")
 
 
 def _plant_number(value: str, *, context: str) -> int:
@@ -169,6 +171,16 @@ def normalise_dataset_selection(dataset: str | None) -> str:
         raise ValueError(
             "data.dataset must be 'combined' or a lowercase filesystem-safe source "
             "dataset ID"
+        )
+    return selection
+
+
+def normalise_point_cloud_type(pcl_type: str | None) -> str:
+    """Validate the full/top-down selection used by model training."""
+    selection = "full" if pcl_type is None else str(pcl_type).strip().lower()
+    if selection not in POINT_CLOUD_TYPES:
+        raise ValueError(
+            f"data.pcl_type must be one of {POINT_CLOUD_TYPES}, got {pcl_type!r}"
         )
     return selection
 
@@ -420,6 +432,40 @@ class ProcessedPlantDataset(Dataset[PlantSample]):
 
     def __getitem__(self, index: int) -> PlantSample:
         return load_processed_sample(self.paths[index])
+
+
+class PointCloudViewDataset(Dataset[PlantSample]):
+    """Expose full clouds, top-down clouds, or both for model input."""
+
+    def __init__(
+        self,
+        root: str | Path,
+        split: str | None = None,
+        dataset: str | None = COMBINED_DATASET,
+        pcl_type: str = "full",
+    ) -> None:
+        self.full_dataset = ProcessedPlantDataset(root, split=split, dataset=dataset)
+        self.pcl_type = normalise_point_cloud_type(pcl_type)
+        self.variants = ("full", "top_down") if self.pcl_type == "both" else (self.pcl_type,)
+        self.dataset = self.full_dataset.dataset
+        self.dataset_ids = self.full_dataset.dataset_ids
+
+    def __len__(self) -> int:
+        return len(self.full_dataset) * len(self.variants)
+
+    def __getitem__(self, index: int) -> PlantSample:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        source_index, variant_index = divmod(index, len(self.variants))
+        sample = self.full_dataset[source_index]
+        variant = self.variants[variant_index]
+        if variant == "top_down":
+            from tomato_recon.data.top_down import load_top_down_sample
+
+            return load_top_down_sample(self.full_dataset.paths[source_index], sample)
+        return replace(sample, metadata={**sample.metadata, "pcl_type": "full"})
 
 
 def make_tiny_sample(max_nodes: int = 16, num_points: int = 96, seed: int = 7) -> PlantSample:

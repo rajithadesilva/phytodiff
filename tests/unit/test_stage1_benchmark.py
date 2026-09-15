@@ -11,6 +11,7 @@ from scripts.run_stage1_benchmark import (
     DATASETS,
     MODELS,
     BenchmarkProgress,
+    _recorded_pcl_type,
     _write_comparison,
 )
 from tomato_recon.evaluation.encoder import EncoderMetricAccumulator
@@ -84,6 +85,11 @@ def test_benchmark_progress_is_monotonic_and_persisted() -> None:
         assert math.isclose(percentages[-1], 100.0 / 12.0)
         assert all("eta_seconds" in event and "timestamp" in event for event in events)
         assert all(event["dataset"] == "tomatowur" for event in events)
+
+
+def test_benchmark_point_cloud_metadata_supports_legacy_full_runs() -> None:
+    assert _recorded_pcl_type({}) == "full"
+    assert _recorded_pcl_type({"pcl_type": "top_down"}) == "top_down"
 
 
 def test_comparison_outputs_rank_by_validation_and_link_visualizations() -> None:

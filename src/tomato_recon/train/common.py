@@ -21,9 +21,10 @@ from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import PlantBatch, PlantSample
 from tomato_recon.data.processed import (
     COMBINED_DATASET,
-    ProcessedPlantDataset,
+    PointCloudViewDataset,
     make_tiny_sample,
     normalise_dataset_selection,
+    normalise_point_cloud_type,
     processed_dataset_compatibility,
 )
 
@@ -106,6 +107,21 @@ def selected_dataset(cfg: DictConfig) -> str:
     return normalise_dataset_selection(cfg.data.get("dataset", COMBINED_DATASET))
 
 
+def selected_point_cloud_type(cfg: DictConfig) -> str:
+    """Return the configured full/top-down training input selection."""
+    return normalise_point_cloud_type(cfg.data.get("pcl_type", "full"))
+
+
+def create_point_cloud_dataset(cfg: DictConfig, split: str) -> PointCloudViewDataset:
+    """Build the shared input dataset used by every encoder backend."""
+    return PointCloudViewDataset(
+        cfg.data.processed_root,
+        split=split,
+        dataset=selected_dataset(cfg),
+        pcl_type=selected_point_cloud_type(cfg),
+    )
+
+
 def training_dataset_compatibility(
     cfg: DictConfig, sample: PlantSample | None = None
 ) -> dict[str, Any]:
@@ -135,11 +151,7 @@ def training_dataset_compatibility(
 def load_training_sample(cfg: DictConfig) -> PlantSample:
     manifest = Path(cfg.data.processed_root) / "manifest.json"
     if manifest.is_file():
-        dataset = ProcessedPlantDataset(
-            cfg.data.processed_root,
-            split=str(cfg.data.split),
-            dataset=selected_dataset(cfg),
-        )
+        dataset = create_point_cloud_dataset(cfg, str(cfg.data.split))
         if not len(dataset):
             raise ValueError(
                 f"processed split {cfg.data.split!r} for dataset "
@@ -162,11 +174,7 @@ def create_split_loader(
 ) -> DataLoader | list[PlantBatch]:
     manifest = Path(cfg.data.processed_root) / "manifest.json"
     if manifest.is_file():
-        dataset = ProcessedPlantDataset(
-            cfg.data.processed_root,
-            split=split,
-            dataset=selected_dataset(cfg),
-        )
+        dataset = create_point_cloud_dataset(cfg, split)
         if not len(dataset):
             raise ValueError(
                 f"processed split {split!r} for dataset {selected_dataset(cfg)!r} "
@@ -325,6 +333,7 @@ def save_checkpoint(
             preprocessing_hashes[0] if len(preprocessing_hashes) == 1 else None
         ),
         "dataset_compatibility": compatibility,
+        "pcl_type": selected_point_cloud_type(cfg),
         "max_nodes": int(cfg.data.max_nodes),
         "git_commit": state["commit"],
         "git_dirty": bool(state["status"] and state["status"] != "unknown"),
@@ -342,6 +351,7 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer | None = None,
     expected_preprocessing_hash: str | None = None,
     expected_dataset_compatibility: dict[str, Any] | None = None,
+    expected_pcl_type: str | None = None,
     allow_dataset_subset: bool = False,
     expected_max_nodes: int | None = None,
     strict: bool = True,
@@ -352,6 +362,22 @@ def load_checkpoint(
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     actual_hash = checkpoint.get("preprocessing_hash")
     actual_compatibility = checkpoint.get("dataset_compatibility")
+    if expected_pcl_type is not None:
+        expected_mode = normalise_point_cloud_type(expected_pcl_type)
+        checkpoint_config = checkpoint.get("config", {})
+        checkpoint_data = (
+            checkpoint_config.get("data", {})
+            if isinstance(checkpoint_config, dict)
+            else {}
+        )
+        actual_mode = normalise_point_cloud_type(
+            checkpoint.get("pcl_type", checkpoint_data.get("pcl_type", "full"))
+        )
+        if actual_mode != expected_mode:
+            raise ValueError(
+                f"checkpoint point-cloud type mismatch: expected {expected_mode!r}, "
+                f"got {actual_mode!r}"
+            )
     if expected_dataset_compatibility is not None:
         expected_signature = expected_dataset_compatibility.get("signature")
         actual_signature = (

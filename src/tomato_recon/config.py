@@ -75,9 +75,13 @@ def load_config(
 
 
 def validate_config(cfg: DictConfig, stage: str | None = None) -> None:
-    from tomato_recon.data.processed import normalise_dataset_selection
+    from tomato_recon.data.processed import (
+        normalise_dataset_selection,
+        normalise_point_cloud_type,
+    )
 
     cfg.data.dataset = normalise_dataset_selection(cfg.data.get("dataset", "combined"))
+    cfg.data.pcl_type = normalise_point_cloud_type(cfg.data.get("pcl_type", "full"))
     if int(cfg.data.max_nodes) <= 1:
         raise ValueError("data.max_nodes must be greater than one")
     diffusion_k = int(cfg.model.diffusion.max_nodes)

@@ -222,9 +222,22 @@ Train the default encoder on every training instance from all three sources:
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_encoder --config-name encoder \
-  data.dataset=combined output.dir=outputs/encoder/combined
+  data.dataset=combined data.pcl_type=full output.dir=outputs/encoder/combined
 python -c "import torch; c=torch.load('outputs/encoder/combined/best.ckpt', map_location='cpu', weights_only=False); print(c['stage'], c['dataset_compatibility'], c['metrics'])"
 ```
+
+`data.pcl_type` controls the input for every encoder backend:
+
+- `full` uses each `sample.npz` once (the default).
+- `top_down` uses its `top_down.npz` once.
+- `both` presents the full and top-down forms as two examples with the same
+  reconstruction target, doubling the examples in each split.
+
+Training, validation, and test metrics use the selected mode consistently. Top-down
+and both modes require current top-down artifacts; run `make generate-top-down` if
+the loader reports a missing or stale artifact. Use a separate output directory for
+each mode. The shared loader applies this setting to PointNeXt, Sonata PTv3, and
+KPConvX.
 
 Set `data.dataset` to a source ID to train on only that source while preserving its
 train/validation/test split. Always use a separate output directory so one run cannot
@@ -263,6 +276,10 @@ and Pheno4D, adding nine evaluation-only runs without retraining.
 ```bash
 make stage1-benchmark
 make stage1-benchmark STAGE1_BENCHMARK_RESUME=--resume
+make stage1-benchmark STAGE1_TRAIN_PCL_TYPE=top_down \
+  STAGE1_BENCHMARK_OUTPUT=outputs/stage1_benchmark_top_down
+make stage1-benchmark STAGE1_TRAIN_PCL_TYPE=both \
+  STAGE1_BENCHMARK_OUTPUT=outputs/stage1_benchmark_both
 ```
 
 Completed `run_complete.json` entries are always skipped. Therefore, rerunning the first

@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from tomato_recon.data.preprocess import (
     apply_inverse_normalisation,
@@ -15,9 +16,14 @@ from tomato_recon.data.preprocess import (
     voxel_downsample,
 )
 from tomato_recon.data.processed import (
+    PointCloudViewDataset,
     ProcessedPlantDataset,
+    make_tiny_sample,
     processed_dataset_compatibility,
+    save_processed_sample,
+    write_processed_dataset_manifest,
 )
+from tomato_recon.data.top_down import TopDownSettings, ensure_top_down
 
 
 class DataTests(unittest.TestCase):
@@ -112,6 +118,55 @@ class DataTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "not available"):
                 ProcessedPlantDataset(root, dataset="tomatopgt")
+
+    def test_point_cloud_view_dataset_selects_full_top_down_or_both(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sample = make_tiny_sample(max_nodes=16, num_points=96)
+            sample.plant_id = "plant_000001"
+            sample.metadata["instance_id"] = sample.plant_id
+            source_path = root / sample.plant_id / "sample.npz"
+            save_processed_sample(sample, source_path)
+            entry = {
+                "dataset": "fixture",
+                "plant_id": sample.plant_id,
+                "instance_id": sample.plant_id,
+                "source_plant_id": "source-1",
+                "source_instance_id": "scan-1",
+                "split": "train",
+                "status": "complete",
+                "cache_file": "plant_000001/sample.npz",
+            }
+            write_processed_dataset_manifest(
+                root,
+                {
+                    "schema_version": "1.0",
+                    "layout": "flat-plant-instance-v1",
+                    "datasets": {"fixture": {"dataset": "fixture"}},
+                    "instances": [entry],
+                },
+            )
+            ensure_top_down(root, entry, TopDownSettings(occlusion_radius_m=0.02))
+
+            full = PointCloudViewDataset(root, split="train", dataset="fixture", pcl_type="full")
+            top_down = PointCloudViewDataset(
+                root, split="train", dataset="fixture", pcl_type="top_down"
+            )
+            both = PointCloudViewDataset(root, split="train", dataset="fixture", pcl_type="both")
+
+            self.assertEqual((len(full), len(top_down), len(both)), (1, 1, 2))
+            self.assertEqual(full[0].metadata["pcl_type"], "full")
+            self.assertEqual(top_down[0].metadata["pcl_type"], "top_down")
+            self.assertEqual([both[index].metadata["pcl_type"] for index in range(2)],
+                             ["full", "top_down"])
+            self.assertLess(len(top_down[0].xyz), len(full[0].xyz))
+            for field in (
+                "node_xyz", "node_valid", "parent_flow", "parent_index",
+                "organ_type", "topology_role", "visibility",
+            ):
+                torch.testing.assert_close(getattr(top_down[0], field), getattr(full[0], field))
+            with self.assertRaisesRegex(ValueError, "data.pcl_type"):
+                PointCloudViewDataset(root, pcl_type="partial")
 
 if __name__ == "__main__":
     unittest.main()
