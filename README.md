@@ -92,6 +92,23 @@ The default source archives contribute:
 
 Running all three against an initially empty destination produces 163 complete instances. The converters reject cross-date split leakage by keeping every scan from the same physical source plant in one split.
 
+Pheno4D uses its raw +Z as the biological up direction: soil lies in XY and the
+stem grows above it. The adapter converts millimetres to metres and centres the
+plant at its reconstructed stem base. Its `raw-z-up-v2` coordinate contract
+corrects the retired viewer-oriented mapping, which incorrectly put height into
+Y. Relative to that old cache, the rotation is `(X, Y, Z) -> (X, -Z, Y)` before
+root centring. Skeletons, normals, parameter targets, and top-down clouds are
+computed in the corrected frame, and `normalised_to_original` maps back to raw
+millimetres. The frame version participates in preprocessing hashes, so old
+Pheno4D caches are rebuilt automatically. Checkpoints trained on the old Pheno4D
+or combined dataset require retraining; their compatibility signatures no longer
+match the corrected dataset.
+
+The released `T02_0325_a` annotation swaps soil and stem labels. The converter
+maps source `0 -> 1` and `1 -> 0` for that scan before producing semantic and
+instance targets; leaf IDs and the raw file are preserved. This correction is
+recorded in `source_label_correction` metadata and the preprocessing contract.
+
 #### Top-down partial point clouds
 
 Every preparation command also writes `plant_<number>/top_down.npz` alongside the

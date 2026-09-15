@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 import numpy as np
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import cKDTree
@@ -29,6 +29,10 @@ from tomato_recon.data.schemas import OrganType, PlantSample, SemanticClass
 
 _TOMATO_DIRECTORY = re.compile(r"^Tomato\d{2}$")
 _ANNOTATED_SCAN = re.compile(r"^T\d{2}_\d{4}_a\.txt$")
+PHENO4D_COORDINATE_FRAME_VERSION = "raw-z-up-v2"
+_SOURCE_TRANSLATION_MM = np.asarray([50.0, 740.0, 0.0], dtype=np.float64)
+# This scan's annotation reverses soil and stem; leaf IDs are already correct.
+_SOURCE_LABEL_CORRECTIONS = {"T02_0325_a": {"0": 1, "1": 0}}
 
 
 @dataclass(frozen=True)
@@ -90,12 +94,15 @@ class Pheno4DReader:
         return iter(self.records)
 
 
-def pheno4d_official_orientation(xyz_mm: np.ndarray) -> np.ndarray:
-    """Apply the orientation/translation used by the official Pheno4D loader."""
-    result = np.empty_like(xyz_mm, dtype=np.float64)
-    result[:, 0] = xyz_mm[:, 0] + 50.0
-    result[:, 1] = xyz_mm[:, 2]
-    result[:, 2] = -xyz_mm[:, 1] - 740.0
+def pheno4d_canonical_orientation(xyz_mm: np.ndarray) -> np.ndarray:
+    """Keep raw +Z upright and convert millimetres to canonical metres.
+
+    Raw soil lies in XY and stems grow along +Z. The previous viewer-oriented
+    mapping put raw Z into Y. Correcting that cache frame requires +90 degrees
+    about X: (old X, old Y, old Z) -> (old X, -old Z, old Y).
+    Applied directly to raw scans, this preserves the raw axis directions.
+    """
+    result = np.asarray(xyz_mm, dtype=np.float64) + _SOURCE_TRANSLATION_MM
     return (result * 0.001).astype(np.float32)
 
 
@@ -327,13 +334,9 @@ def estimate_normals(
 
 
 def _normalised_to_source_mm(root_oriented_m: np.ndarray) -> np.ndarray:
-    rotation = np.asarray(
-        [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]], dtype=np.float64
-    )
-    translation_mm = np.asarray([50.0, 0.0, -740.0], dtype=np.float64)
     result = np.eye(4, dtype=np.float64)
-    result[:3, :3] = 1000.0 * rotation.T
-    result[:3, 3] = rotation.T @ (1000.0 * root_oriented_m - translation_mm)
+    result[:3, :3] *= 1000.0
+    result[:3, 3] = 1000.0 * root_oriented_m - _SOURCE_TRANSLATION_MM
     return result
 
 
@@ -351,10 +354,15 @@ def convert_pheno4d_record(
             f"annotated Pheno4D tomato files must have four columns, got {values.shape[1]}: "
             f"{record.point_cloud_path}"
         )
-    xyz = pheno4d_official_orientation(values[:, :3])
+    xyz = pheno4d_canonical_orientation(values[:, :3])
     labels = values[:, 3].astype(np.int64)
     if labels.min(initial=0) < 0:
         raise ValueError(f"Pheno4D labels must be non-negative: {record.point_cloud_path}")
+    label_correction = _SOURCE_LABEL_CORRECTIONS.get(record.instance_id, {})
+    if label_correction:
+        source_labels = labels.copy()
+        for original, corrected in label_correction.items():
+            labels[source_labels == int(original)] = corrected
     semantic = np.where(
         labels == 0,
         int(SemanticClass.BACKGROUND),
@@ -419,13 +427,18 @@ def convert_pheno4d_record(
         "dataset_version": source["dataset_version"],
         "normalised_to_original": _normalised_to_source_mm(root_oriented).tolist(),
         "source_coordinate_unit": "millimetres",
+        "source_up_axis": "Z",
+        "coordinate_frame_version": PHENO4D_COORDINATE_FRAME_VERSION,
         "preprocessing_hash": source["preprocessing_hash"],
         "source_hashes": source["source_hashes"],
         "point_to_original_index": original_indices.tolist(),
         "rgb_available": False,
         "rgb_imputation": "zeros",
         "normals_source": "local_pca",
-        "semantic_source": "source_manual_annotation",
+        "semantic_source": (
+            "source_manual_annotation_corrected" if label_correction else "source_manual_annotation"
+        ),
+        "source_label_correction": dict(label_correction),
         "skeleton_source": "reconstructed_from_manual_organs",
         "skeleton_reconstruction_method": "stem_slices_and_leaf_geodesics_v1",
         "skeleton_modified": True,
@@ -466,6 +479,12 @@ def convert_pheno4d_record(
 def preprocess_pheno4d(
     cfg: DictConfig, *, progress: ProgressCallback | None = None
 ) -> dict[str, Any]:
+    # The adapter owns its coordinate contract. Include it even for programmatic
+    # configs so caches/checkpoints made with the retired Y-up transform mismatch.
+    cfg = OmegaConf.merge(cfg, {
+        "coordinate_frame_version": PHENO4D_COORDINATE_FRAME_VERSION,
+        "source_label_corrections": _SOURCE_LABEL_CORRECTIONS,
+    })
     reader = Pheno4DReader(cfg)
     expected = int(cfg.get("expected_complete_instances", 0))
     if expected and len(reader) != expected:
@@ -473,6 +492,9 @@ def preprocess_pheno4d(
             f"expected {expected} annotated Pheno4D tomato instances, discovered {len(reader)}"
         )
     fields = {
+        "coordinate_frame_version": PHENO4D_COORDINATE_FRAME_VERSION,
+        "source_label_corrections": _SOURCE_LABEL_CORRECTIONS,
+        "coordinate_frame": {"up_axis": "Z", "meters_per_unit": 1.0},
         "label_map": {
             "0": "background",
             "1": "leaf",

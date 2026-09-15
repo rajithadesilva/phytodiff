@@ -9,7 +9,13 @@ from pathlib import Path
 import numpy as np
 from omegaconf import OmegaConf
 
-from tomato_recon.data.pheno4d import _stem_centerline, preprocess_pheno4d
+from tomato_recon.data.pheno4d import (
+    PHENO4D_COORDINATE_FRAME_VERSION,
+    _normalised_to_source_mm,
+    _stem_centerline,
+    pheno4d_canonical_orientation,
+    preprocess_pheno4d,
+)
 from tomato_recon.data.processed import ProcessedPlantDataset
 from tomato_recon.data.schemas import OrganType, SemanticClass
 from tomato_recon.data.tomatopgt import preprocess_tomatopgt
@@ -96,8 +102,8 @@ def create_tomatopgt_fixture(root: Path) -> None:
 def _pheno_raw_from_oriented(xyz_m: np.ndarray) -> np.ndarray:
     result = np.empty_like(xyz_m)
     result[:, 0] = xyz_m[:, 0] * 1000.0 - 50.0
-    result[:, 1] = -xyz_m[:, 2] * 1000.0 - 740.0
-    result[:, 2] = xyz_m[:, 1] * 1000.0
+    result[:, 1] = xyz_m[:, 1] * 1000.0 - 740.0
+    result[:, 2] = xyz_m[:, 2] * 1000.0
     return result
 
 
@@ -130,6 +136,59 @@ def create_pheno4d_fixture(root: Path) -> None:
 
 
 class OtherDatasetConversionTests(unittest.TestCase):
+    def test_pheno4d_known_swapped_labels_are_corrected_before_reconstruction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw_root = root / "raw"
+            create_pheno4d_fixture(raw_root)
+            (raw_root / "Tomato01").rename(raw_root / "Tomato02")
+            path = raw_root / "Tomato02/T02_0325_a.txt"
+            (path.parent / "T01_0305_a.txt").rename(path)
+            values = np.loadtxt(path)
+            original_labels = values[:, 3].copy()
+            values[original_labels == 0, 3] = 1
+            values[original_labels == 1, 3] = 0
+            np.savetxt(path, values)
+            raw_hash = file_sha256(path)
+            cfg = OmegaConf.load(Path(__file__).parents[2] / "configs/data/pheno4d_tomato.yaml")
+            cfg.raw_root = str(raw_root)
+            cfg.dataset_root = str(root / "dataset")
+            cfg.processed_root = cfg.dataset_root
+            cfg.split_by_source_plant = {"Tomato02": "test"}
+            cfg.expected_complete_instances = 1
+            report = preprocess_pheno4d(cfg)
+            sample = ProcessedPlantDataset(cfg.dataset_root)[0]
+            rows = sample.metadata["point_to_original_index"]
+            expected = np.where(original_labels == 0, int(SemanticClass.BACKGROUND),
+                                np.where(original_labels == 1, int(SemanticClass.MAIN_STEM),
+                                         int(SemanticClass.LEAF)))
+            np.testing.assert_array_equal(sample.semantic.numpy(), expected[rows])
+            np.testing.assert_array_equal(sample.instance.numpy(),
+                                          np.where(original_labels == 0, -1, original_labels)[rows])
+            self.assertEqual(sample.metadata["source_label_correction"], {"0": 1, "1": 0})
+            self.assertEqual(report["preprocessing_config"]["source_label_corrections"],
+                             {"T02_0325_a": {"0": 1, "1": 0}})
+            self.assertEqual(file_sha256(path), raw_hash)
+            soil = sample.xyz[sample.semantic == int(SemanticClass.BACKGROUND), 2]
+            stem = sample.xyz[sample.semantic == int(SemanticClass.MAIN_STEM), 2]
+            self.assertLess(float(soil.median()), float(stem.median()))
+
+    def test_pheno4d_raw_z_is_up_and_coordinates_round_trip(self) -> None:
+        raw = np.asarray([
+            [-50., -740., 0.], [-40., -740., 0.], [-50., -730., 0.],
+            [-50., -740., 100.], [-45., -735., 200.],
+        ], dtype=np.float32)
+        canonical = pheno4d_canonical_orientation(raw)
+        np.testing.assert_allclose(canonical[:3, 2], 0.)
+        np.testing.assert_allclose(canonical[3], [0., 0., 0.1], atol=1e-7)
+        # The old cache's Y axis becomes Z, and its Z axis becomes negative Y.
+        old = np.column_stack([raw[:, 0] + 50, raw[:, 2], -raw[:, 1] - 740]) * 0.001
+        np.testing.assert_allclose(canonical, old[:, [0, 2, 1]] * [1, -1, 1], atol=1e-7)
+        root = canonical[3]
+        homogeneous = np.column_stack([canonical - root, np.ones(len(raw))])
+        restored = homogeneous @ _normalised_to_source_mm(root).T
+        np.testing.assert_allclose(restored[:, :3], raw, atol=2e-5)
+
     def test_short_near_horizontal_pheno4d_stem_uses_principal_axis(self) -> None:
         along_stem = np.linspace(0.0, 0.015, 80)
         stem = np.stack(
@@ -220,6 +279,17 @@ class OtherDatasetConversionTests(unittest.TestCase):
                 [entry["instance_id"] for entry in manifest["instances"]],
                 ["plant_000001", "plant_000002"],
             )
+            self.assertEqual(
+                pheno_report["preprocessing_config"]["coordinate_frame_version"],
+                PHENO4D_COORDINATE_FRAME_VERSION,
+            )
+            # A cache made under the old frame must be rebuilt even when the raw
+            # scan and all user-specified preprocessing settings are unchanged.
+            manifest["instances"][1]["preprocessing_hash"] = "retired-y-up-frame"
+            (dataset_root / "manifest.json").write_text(json.dumps(manifest))
+            refreshed_pheno = preprocess_pheno4d(pheno_cfg)
+            self.assertEqual(refreshed_pheno["resumed_instance_count"], 1)
+            self.assertEqual(refreshed_pheno["preprocessing_hash"], pheno_report["preprocessing_hash"])
             repeated_pgt = preprocess_tomatopgt(pgt_cfg)
             self.assertEqual(repeated_pgt["new_instance_count"], 0)
             self.assertEqual(repeated_pgt["skipped_instance_count"], 1)
@@ -266,6 +336,21 @@ class OtherDatasetConversionTests(unittest.TestCase):
             self.assertTrue(bool((pheno.semantic == int(SemanticClass.LEAF)).any()))
             self.assertTrue(bool((pheno.organ_type == int(OrganType.LEAF_STRUCTURE)).any()))
             self.assertTrue(bool(np.allclose(pheno.node_xyz[0].numpy(), 0.0)))
+            self.assertEqual(pheno.metadata["coordinate_frame_version"],
+                             PHENO4D_COORDINATE_FRAME_VERSION)
+            soil = pheno.xyz[pheno.semantic == int(SemanticClass.BACKGROUND)]
+            stem = pheno.xyz[pheno.semantic == int(SemanticClass.MAIN_STEM)]
+            self.assertLess(float(soil[:, 2].median()), float(stem[:, 2].median()))
+            self.assertLess(float(soil[:, 2].max() - soil[:, 2].min()), 1e-6)
+            self.assertGreater(float(stem[:, 2].max() - stem[:, 2].min()), 0.09)
+            raw_values = np.loadtxt(pheno_root / "Tomato01/T01_0305_a.txt")
+            restored = np.column_stack([pheno.xyz.numpy(), np.ones(len(pheno.xyz))]) @ np.asarray(
+                pheno.metadata["normalised_to_original"]
+            ).T
+            np.testing.assert_allclose(
+                restored[:, :3], raw_values[pheno.metadata["point_to_original_index"], :3],
+                atol=1e-4,
+            )
             pheno.graph_target.validate()
 
 
