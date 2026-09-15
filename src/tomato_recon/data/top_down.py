@@ -1,0 +1,216 @@
+"""Deterministic parallel-ray visibility and derived top-down cloud artifacts."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import tempfile
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from scipy.spatial import cKDTree
+
+ALGORITHM_VERSION = "xy-footprint-v1"
+POINT_FIELDS = ("xyz", "rgb", "normals", "semantic", "instance", "point_valid")
+
+
+@dataclass(frozen=True)
+class TopDownSettings:
+    enabled: bool = True
+    occlusion_radius_m: float = 0.001
+    depth_tolerance_m: float = 0.001
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("top_down.enabled must be a boolean")
+        for name in ("occlusion_radius_m", "depth_tolerance_m"):
+            value = getattr(self, name)
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+
+    @classmethod
+    def from_config(cls, cfg: Mapping[str, Any]) -> TopDownSettings:
+        return cls(**dict(cfg.get("top_down", {})))
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def top_down_indices(
+    xyz: np.ndarray,
+    point_valid: np.ndarray | None = None,
+    *,
+    occlusion_radius_m: float = 0.001,
+    depth_tolerance_m: float = 0.001,
+) -> np.ndarray:
+    """Return source rows visible along -Z, in their original order.
+
+    Every valid input point contributes a circular footprint in XY. A point is
+    hidden if any footprint covering its centre is higher by more than the depth
+    tolerance. Zero radius explicitly disables occlusion. Invalid rows neither
+    occlude nor appear in the output. No random sampling or normal filtering is used.
+    """
+    TopDownSettings(occlusion_radius_m=occlusion_radius_m, depth_tolerance_m=depth_tolerance_m)
+    xyz = np.asarray(xyz)
+    if xyz.ndim != 2 or xyz.shape[1] != 3 or not np.isfinite(xyz).all():
+        raise ValueError("xyz must be a finite array with shape [N, 3]")
+    valid = np.ones(len(xyz), dtype=bool) if point_valid is None else np.asarray(point_valid)
+    if valid.shape != (len(xyz),) or valid.dtype != np.bool_:
+        raise ValueError("point_valid must be a boolean array with shape [N]")
+    rows = np.flatnonzero(valid)
+    if not len(rows):
+        raise ValueError("point cloud must contain at least one valid point")
+    if occlusion_radius_m == 0:
+        return rows
+
+    points = xyz[rows].astype(np.float64)
+    tree = cKDTree(points[:, :2])
+    visible = np.ones(len(rows), dtype=bool)
+    # Count first so dense footprints cannot create an unbounded batch of lists.
+    # A single query is bounded by the input cloud size.
+    for start in range(0, len(rows), 256):
+        stop = min(start + 256, len(rows))
+        counts = tree.query_ball_point(
+            points[start:stop, :2], occlusion_radius_m, return_length=True
+        )
+        cursor = start
+        while cursor < stop:
+            cumulative = np.cumsum(counts[cursor - start:])
+            size = max(1, int(np.searchsorted(cumulative, 262144, side="right")))
+            end = min(cursor + size, stop)
+            neighbours = tree.query_ball_point(points[cursor:end, :2], occlusion_radius_m)
+            for index, nearby in enumerate(neighbours, start=cursor):
+                visible[index] = (
+                    np.max(points[nearby, 2]) - points[index, 2] <= depth_tolerance_m
+                )
+            cursor = end
+    return rows[visible]
+
+
+def ensure_top_down(
+    root: Path, entry: dict[str, Any], settings: TopDownSettings
+) -> str:
+    """Create/repair one artifact and update its in-memory manifest entry."""
+    if not settings.enabled:
+        return "disabled"
+    source_path = root / entry["cache_file"]
+    output_path = source_path.with_name("top_down.npz")
+    source_hash = file_sha256(source_path)
+    contract = {
+        "cache_file": output_path.relative_to(root).as_posix(),
+        "source_cache_file": entry["cache_file"],
+        "source_cache_sha256": source_hash,
+        "algorithm_version": ALGORITHM_VERSION,
+        "settings": asdict(settings),
+    }
+    previous = entry.get("top_down", {})
+    if (
+        all(previous.get(key) == value for key, value in contract.items())
+        and output_path.is_file()
+        and previous.get("cache_sha256") == file_sha256(output_path)
+    ):
+        return "skipped"
+
+    with np.load(source_path, allow_pickle=False) as source:
+        arrays = {name: source[name] for name in POINT_FIELDS}
+        count = len(arrays["xyz"])
+        for name, values in arrays.items():
+            expected = (count, 3) if name in {"xyz", "rgb", "normals"} else (count,)
+            if values.shape != expected:
+                raise ValueError(f"{source_path}: {name} must have shape {expected}")
+        indices = top_down_indices(
+            arrays["xyz"], arrays["point_valid"],
+            occlusion_radius_m=settings.occlusion_radius_m,
+            depth_tolerance_m=settings.depth_tolerance_m,
+        )
+        metadata = json.loads(str(source["metadata_json"].item()))
+        if "point_to_original_index" in metadata:
+            mapping = np.asarray(metadata["point_to_original_index"])
+            if mapping.shape != (count,):
+                raise ValueError(f"{source_path}: invalid point_to_original_index shape")
+            metadata["point_to_original_index"] = mapping[indices].tolist()
+        identity = {name: source[name] for name in ("plant_id", "instance_id")}
+
+    valid_count = int(arrays["point_valid"].sum())
+    stats = {
+        "full_point_count": count,
+        "valid_point_count": valid_count,
+        "point_count": len(indices),
+        "retained_fraction": len(indices) / valid_count,
+    }
+    metadata["top_down"] = {
+        **contract, **stats,
+        "view_direction": [0.0, 0.0, -1.0],
+        "coordinate_frame": {"up_axis": "Z", "meters_per_unit": 1.0},
+        "full_sample_file": source_path.name,
+        "graph_target_file": source_path.with_suffix(".graph.json").name,
+        "param_target_file": source_path.with_suffix(".params.json").name,
+    }
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=output_path.parent, suffix=".npz", delete=False) as f:
+            temporary_path = Path(f.name)
+            np.savez_compressed(
+                f,
+                schema_version=np.asarray("1.0"),
+                **identity,
+                **{name: values[indices] for name, values in arrays.items()},
+                source_point_indices=indices,
+                metadata_json=np.asarray(json.dumps(metadata, sort_keys=True)),
+            )
+        # NamedTemporaryFile starts at 0600; preserve the source's read access so
+        # clouds generated in a container remain readable by dataset consumers.
+        temporary_path.chmod(source_path.stat().st_mode & 0o666)
+        output_hash = file_sha256(temporary_path)
+        temporary_path.replace(output_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    entry["top_down"] = {**contract, **stats, "cache_sha256": output_hash}
+    return "generated"
+
+
+def generate_top_down_dataset(
+    root: str | Path,
+    settings: TopDownSettings | None = None,
+    *,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Backfill completed manifest instances, preserving full-cloud contracts."""
+    from tomato_recon.data.processed import (
+        load_processed_dataset_manifest,
+        write_processed_dataset_manifest,
+    )
+
+    root = Path(root)
+    if not (root / "manifest.json").is_file():
+        raise ValueError(f"processed dataset manifest is missing: {root / 'manifest.json'}")
+    settings = settings or TopDownSettings()
+    manifest = load_processed_dataset_manifest(root)
+    entries = [entry for entry in manifest["instances"] if entry["status"] == "complete"]
+    report: dict[str, Any] = {
+        "total": len(entries), "generated": 0, "skipped": 0, "disabled": 0, "failures": [],
+    }
+    for current, entry in enumerate(entries, start=1):
+        try:
+            action = ensure_top_down(root, entry, settings)
+            if action == "generated":
+                write_processed_dataset_manifest(root, manifest)
+            report[action] += 1
+            update = {"action": action, **entry.get("top_down", {})}
+        except Exception as exc:
+            failure = {"instance_id": entry["instance_id"], "error": str(exc)}
+            report["failures"].append(failure)
+            update = {"action": "failed", **failure}
+        if progress is not None:
+            progress({"current": current, "total": len(entries),
+                      "instance_id": entry["instance_id"], **update})
+    return report

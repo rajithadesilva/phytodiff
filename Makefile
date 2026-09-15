@@ -1,4 +1,12 @@
-.PHONY: install test smoke docker-build preprocess prepare-stage1-models stage1-benchmark visualize-stage1-test
+.PHONY: install test smoke docker-build preprocess generate-top-down visualize-dataset prepare-stage1-models stage1-benchmark visualize-stage1-test
+
+DATASET_ROOT ?= data/dataset
+TOP_DOWN_OCCLUSION_RADIUS_M ?= 0.005
+TOP_DOWN_DEPTH_TOLERANCE_M ?= 0.005
+DATASET_VIS_OUTPUT ?= outputs/dataset_preview
+DATASET_VIS_COUNT ?= 0
+DATASET_VIS_AZIMUTH_DEG ?= 35
+DATASET_VIS_ELEVATION_DEG ?= 15
 
 STAGE1_CHECKPOINT ?= outputs/stage1_benchmark/combined/kpconvx/best.ckpt
 STAGE1_PROCESSED_ROOT ?= data/dataset
@@ -21,6 +29,21 @@ docker-build:
 
 preprocess:
 	python scripts/prepare_tomatowur.py --config configs/data/tomatowur_v3.yaml
+
+generate-top-down:
+	docker compose -f docker/docker-compose.yml run --rm \
+		-e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 preprocess \
+		python -u scripts/generate_top_down.py "$(DATASET_ROOT)" \
+		--occlusion-radius-m "$(TOP_DOWN_OCCLUSION_RADIUS_M)" \
+		--depth-tolerance-m "$(TOP_DOWN_DEPTH_TOLERANCE_M)"
+
+visualize-dataset:
+	docker compose -f docker/docker-compose.yml run --rm \
+		-e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 preprocess \
+		python -u scripts/visualize_dataset.py "$(DATASET_ROOT)" \
+		--count "$(DATASET_VIS_COUNT)" --output "$(DATASET_VIS_OUTPUT)" \
+		--azimuth-deg "$(DATASET_VIS_AZIMUTH_DEG)" \
+		--elevation-deg "$(DATASET_VIS_ELEVATION_DEG)"
 
 prepare-stage1-models:
 	docker compose -f docker/docker-compose.yml run --rm train \

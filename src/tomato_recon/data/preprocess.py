@@ -37,6 +37,7 @@ from tomato_recon.data.processed import (
     write_processed_dataset_manifest,
 )
 from tomato_recon.data.tomatowur import TomatoWURReader
+from tomato_recon.data.top_down import TopDownSettings, ensure_top_down
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -455,6 +456,7 @@ def preprocess_dataset(
     cfg: DictConfig, *, progress: ProgressCallback | None = None
 ) -> dict[str, Any]:
     dataset_identity = processed_dataset_identity(cfg)
+    top_down_settings = TopDownSettings.from_config(cfg)
     output_root = resolve_processed_dataset_root(cfg)
     if str(cfg.get("skeleton_mode", "")) != "official_gt_direct":
         raise ValueError(
@@ -503,6 +505,7 @@ def preprocess_dataset(
     hash_config = dict(cfg_plain)
     hash_config.pop("splits", None)
     hash_config.pop("split_files", None)
+    hash_config.pop("top_down", None)
     preprocessing_hash = canonical_hash(hash_config)
     dataset_manifest["datasets"][dataset_identity["dataset"]] = {
         **dataset_identity,
@@ -619,6 +622,14 @@ def preprocess_dataset(
                 and params_path.is_file()
             )
             if unchanged:
+                top_down_action = ensure_top_down(output_root, manifest_entry, top_down_settings)
+                if top_down_action == "generated":
+                    write_processed_dataset_manifest(output_root, dataset_manifest)
+                    _emit_progress(
+                        progress, "top_down", **progress_details,
+                        instance_id=global_instance_id,
+                        point_count=manifest_entry["top_down"]["point_count"],
+                    )
                 split_counts[split] += 1
                 skipped_instance_count += 1
                 manifest_instances.append(dict(manifest_entry))
@@ -701,6 +712,7 @@ def preprocess_dataset(
                 )
             else:
                 context_path.unlink(missing_ok=True)
+            ensure_top_down(output_root, manifest_entry, top_down_settings)
             split_counts[split] += 1
             manifest_entry.update(
                 {

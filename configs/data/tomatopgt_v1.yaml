@@ -18,4 +18,7 @@ max_nodes: 256
 skeleton_spacing_m: 0.006
 visibility_distance_m: 0.01
 strict: true
-
+top_down:
+  enabled: true
+  occlusion_radius_m: 0.001
+  depth_tolerance_m: 0.001

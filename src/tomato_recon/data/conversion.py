@@ -38,6 +38,7 @@ from tomato_recon.data.schemas import (
     TopologyRole,
     Visibility,
 )
+from tomato_recon.data.top_down import TopDownSettings, ensure_top_down
 
 
 class CompleteSourceRecord(Protocol):
@@ -269,11 +270,13 @@ def convert_complete_records(
 ) -> dict[str, Any]:
     """Write complete source records into the shared flat plant-instance dataset."""
     identity = processed_dataset_identity(cfg)
+    top_down_settings = TopDownSettings.from_config(cfg)
     output_root = resolve_processed_dataset_root(cfg)
     cfg_plain = OmegaConf.to_container(cfg, resolve=True)
     if not isinstance(cfg_plain, dict):
         raise TypeError("preprocessing configuration must be a mapping")
-    preprocessing_hash = canonical_hash(cfg_plain)
+    hash_config = {key: value for key, value in cfg_plain.items() if key != "top_down"}
+    preprocessing_hash = canonical_hash(hash_config)
     records = sorted(records, key=lambda item: (item.plant_id, item.instance_id))
     source_ids = [record.instance_id for record in records]
     if len(source_ids) != len(set(source_ids)):
@@ -384,6 +387,13 @@ def convert_complete_records(
             and params_path.is_file()
         )
         if unchanged:
+            top_down_action = ensure_top_down(output_root, entry, top_down_settings)
+            if top_down_action == "generated":
+                write_processed_dataset_manifest(output_root, manifest)
+                _emit_progress(
+                    progress, "top_down", **details,
+                    instance_id=global_id, point_count=entry["top_down"]["point_count"],
+                )
             skipped_count += 1
             completed_entries.append(dict(entry))
             _emit_progress(
@@ -447,6 +457,7 @@ def convert_complete_records(
             json.dumps(sample.param_target.to_dict(), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        ensure_top_down(output_root, entry, top_down_settings)
         entry.update({"cache_sha256": sha256_file(cache_path), "status": "complete", **stats})
         completed_entries.append(dict(entry))
         write_processed_dataset_manifest(output_root, manifest)

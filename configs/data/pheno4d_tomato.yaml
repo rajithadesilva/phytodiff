@@ -27,4 +27,7 @@ leaf_graph_radius_m: 0.016
 leaf_graph_max_points: 6000
 reconstructed_graph_confidence: 0.8
 strict: true
-
+top_down:
+  enabled: true
+  occlusion_radius_m: 0.001
+  depth_tolerance_m: 0.001

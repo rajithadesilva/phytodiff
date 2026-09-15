@@ -12,6 +12,7 @@ from tests.fixtures import create_tomatowur_fixture
 from tomato_recon.data.processed import ProcessedPlantDataset
 from tomato_recon.data.schemas import IGNORE_INDEX, OrganType
 from tomato_recon.data.preprocess import preprocess_dataset
+from tomato_recon.data.top_down import file_sha256
 
 
 class PreprocessingIntegrationTests(unittest.TestCase):
@@ -110,6 +111,23 @@ class PreprocessingIntegrationTests(unittest.TestCase):
             self.assertEqual(first["next_plant_number"], 13)
             self.assertEqual(second["new_instance_count"], 0)
             self.assertEqual(second["skipped_instance_count"], 1)
+            partial_path = dataset_root / "plant_000012/top_down.npz"
+            self.assertTrue(partial_path.is_file())
+            full_path = partial_path.with_name("sample.npz")
+            full_hash = file_sha256(full_path)
+            partial_path.unlink()
+            backfill = preprocess_dataset(cfg)
+            self.assertEqual(backfill["skipped_instance_count"], 1)
+            self.assertTrue(partial_path.is_file())
+            cfg.top_down = {"occlusion_radius_m": 0.0}
+            changed = preprocess_dataset(cfg)
+            self.assertEqual(changed["skipped_instance_count"], 1)
+            self.assertEqual(changed["preprocessing_hash"], first["preprocessing_hash"])
+            self.assertEqual(file_sha256(full_path), full_hash)
+            self.assertEqual(
+                changed["instances"][0]["top_down"]["point_count"],
+                changed["instances"][0]["point_count"],
+            )
             self.assertEqual(progress_updates[0]["phase"], "loading_splits")
             self.assertEqual(progress_updates[-1]["phase"], "finished")
             self.assertEqual(

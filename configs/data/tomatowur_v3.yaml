@@ -17,3 +17,7 @@ use_normals: true
 remove_support_pole: true
 visibility_distance_m: 0.01
 strict: true
+top_down:
+  enabled: true
+  occlusion_radius_m: 0.001
+  depth_tolerance_m: 0.001

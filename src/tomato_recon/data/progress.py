@@ -75,6 +75,11 @@ class ProgressPrinter:
         target = update.get("instance_id")
         if phase == "checking":
             self._write_instance_line(f"{prefix}: checking inputs")
+        elif phase == "top_down":
+            self._write_instance_line(
+                f"{prefix} -> {target}: generated top-down cloud "
+                f"({update['point_count']} points)", final=True,
+            )
         elif phase == "processing":
             self._write_instance_line(f"{prefix} -> {target}: {update['action']}")
         elif phase == "writing":

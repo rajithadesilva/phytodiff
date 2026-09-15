@@ -92,19 +92,107 @@ The default source archives contribute:
 
 Running all three against an initially empty destination produces 163 complete instances. The converters reject cross-date split leakage by keeping every scan from the same physical source plant in one split.
 
+#### Top-down partial point clouds
+
+Every preparation command also writes `plant_<number>/top_down.npz` alongside the
+full `sample.npz`. To add these clouds to an existing dataset without reading the
+raw source scans, run from the repository root:
+
+```bash
+make generate-top-down
+# Optional: change geometric occlusion strength.
+make generate-top-down TOP_DOWN_OCCLUSION_RADIUS_M=0.002 TOP_DOWN_DEPTH_TOLERANCE_M=0.001
+```
+
+These targets run in the existing Docker Compose `preprocess` container. No host
+Python environment or GPU is needed. The dataset and outputs are mounted from the
+repository and remain available on the host. Set `DATASET_ROOT` to another path
+under the mounted repository if needed. The equivalent direct Docker command is:
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm \
+  -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 preprocess \
+  python scripts/generate_top_down.py data/dataset \
+  --occlusion-radius-m 0.001 --depth-tolerance-m 0.001
+```
+
+The view uses parallel downward rays along −Z in the canonical metres/Z-up frame.
+Each valid source point contributes a circular XY footprint: a point is hidden
+when another point within `occlusion_radius_m` is higher by more than
+`depth_tolerance_m`. Increasing the radius increases occlusion; zero radius keeps
+all valid points. Both values must be finite and non-negative and default to
+0.001 metres. This is a sampled-surface approximation, so retained counts depend
+on plant geometry and point density. No perspective, noise, or fixed-count
+resampling is applied.
+
+Override these settings during any source conversion using the existing dot-list
+syntax, for example:
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm preprocess \
+  python scripts/prepare_pheno4d.py --config configs/data/pheno4d_tomato.yaml \
+  top_down.occlusion_radius_m=0.002 top_down.depth_tolerance_m=0.001
+```
+
+Set `top_down.enabled=false` to disable automatic generation for that invocation;
+existing partial files are retained. Top-down settings have their own generation
+contract, so changing them regenerates partial files without rebuilding unchanged
+full clouds or changing training compatibility. Conversion reruns also repair
+missing or stale partial files when the full instance is otherwise skipped.
+
+Each partial NPZ stores `xyz`, `rgb`, `normals`, `semantic`, `instance`, and
+`point_valid` in source-row order, plus `source_point_indices` mapping to rows in
+`sample.npz`. `metadata_json` preserves coordinate/provenance metadata and subsets
+`point_to_original_index` when available. Its `top_down` section records the view,
+settings, algorithm version, source checksum, and references to the full sample's
+graph and parameter targets; target geometry stays in the existing files.
+The manifest's per-instance `top_down` entry records the artifact path/checksum,
+source checksum, settings, counts, and fraction of valid source points retained.
+Training continues to load the full samples.
+
+Matching artifacts are skipped. Missing, corrupt, or stale artifacts are replaced
+atomically, and the standalone command reports per-instance progress and a JSON
+summary. Individual failures are reported while other instances continue; any
+failure gives the command a nonzero exit status.
+
 ### 4. Visualise the processed dataset
 
 Prerequisite: at least one completed Stage 0 sample. `--count 0` renders every completed instance in the flat manifest; use a positive value for a smaller prefix.
 
 ```bash
-docker compose -f docker/docker-compose.yml run --rm preprocess \
+make visualize-dataset
+# Optional: preview a subset and adjust the viewing angle.
+make visualize-dataset DATASET_VIS_COUNT=3 DATASET_VIS_AZIMUTH_DEG=35 DATASET_VIS_ELEVATION_DEG=15
+```
+
+Both visualization commands run in Docker. The default renders the entire dataset
+to `outputs/dataset_preview`; override `DATASET_VIS_OUTPUT` to change the output
+directory. The equivalent direct Docker command is:
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm \
+  -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 preprocess \
   python scripts/visualize_dataset.py data/dataset --count 0 \
   --output outputs/dataset_preview
 
-python -c "import json, pathlib; m=json.load(open('data/dataset/manifest.json')); expected=sum(x['status']=='complete' for x in m['instances']); actual=len(list(pathlib.Path('outputs/dataset_preview').glob('plant_*.png'))); print({'expected': expected, 'actual': actual}); assert actual == expected"
+docker compose -f docker/docker-compose.yml run --rm preprocess \
+  python -c "import json, pathlib; m=json.load(open('data/dataset/manifest.json')); expected=sum(x['status']=='complete' for x in m['instances']); actual=len(list(pathlib.Path('outputs/dataset_preview').glob('plant_*.png'))); print({'expected': expected, 'actual': actual}); assert actual == expected"
 ```
 
-Expected: one root-centred, three-view PNG per completed point-cloud instance. With all three default sources this is 163 images. Inspect root position, labels, junctions, and tips. Each viewport is framed using labelled plant points and skeleton nodes so background surfaces do not hide small plants. Red lines show the cached target edges: preserved official GT for TomatoWUR, resampled source graph paths for TomatoPGT, or deterministic reconstructed targets for Pheno4D. Pheno4D has no RGB, so its points use the canonical semantic-class palette.
+Expected: one six-panel PNG per completed point-cloud instance. With all three default sources this is 163 images. The top row keeps the front, side, and top views with cached target edges in red. Each viewport is framed using labelled plant points and skeleton nodes so background surfaces do not hide small plants. Pheno4D has no RGB, so its points use the canonical semantic-class palette.
+
+The bottom row compares the full cloud, the saved top-down partial cloud, and an
+occlusion overlay (green retained points, grey hidden points). All three share the
+same mildly perspective camera and scale, viewed from the side at 15 degrees above
+horizontal. Blue arrows show the downward sensor direction. Skeletons appear only
+in the top row so they do not obscure the missing surfaces in the comparison.
+Counts show actual valid/retained points before display subsampling; the header
+includes the occlusion settings used to generate the saved cloud.
+
+Use `--azimuth-deg 35 --elevation-deg 15` to adjust the comparison camera. These
+options change only the visualization, not the sensor or saved clouds. Missing
+top-down files show an unavailable message; stale files must be regenerated using
+`scripts/generate_top_down.py` before visualizing them.
 
 ### 5. Train Stage 1: point encoder
 

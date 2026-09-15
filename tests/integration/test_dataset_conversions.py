@@ -13,6 +13,7 @@ from tomato_recon.data.pheno4d import _stem_centerline, preprocess_pheno4d
 from tomato_recon.data.processed import ProcessedPlantDataset
 from tomato_recon.data.schemas import OrganType, SemanticClass
 from tomato_recon.data.tomatopgt import preprocess_tomatopgt
+from tomato_recon.data.top_down import file_sha256
 
 
 def _write_ply(path: Path, rows: list[tuple[float, ...]]) -> None:
@@ -225,6 +226,25 @@ class OtherDatasetConversionTests(unittest.TestCase):
             self.assertEqual(repeated_pgt["next_plant_number"], 3)
             self.assertFalse((dataset_root / "tomatopgt").exists())
             self.assertFalse((dataset_root / "pheno4d").exists())
+            for number, config, convert in [
+                (1, pgt_cfg, preprocess_tomatopgt), (2, pheno_cfg, preprocess_pheno4d)
+            ]:
+                partial = dataset_root / f"plant_{number:06d}" / "top_down.npz"
+                self.assertTrue(partial.is_file())
+                full_hash = file_sha256(partial.with_name("sample.npz"))
+                partial.unlink()
+                backfill = convert(config)
+                self.assertEqual(backfill["skipped_instance_count"], 1)
+                self.assertTrue(partial.is_file())
+                config.top_down = {"occlusion_radius_m": 0.0}
+                changed = convert(config)
+                self.assertEqual(changed["skipped_instance_count"], 1)
+                self.assertEqual(changed["preprocessing_hash"], backfill["preprocessing_hash"])
+                self.assertEqual(file_sha256(partial.with_name("sample.npz")), full_hash)
+                self.assertEqual(
+                    changed["instances"][0]["top_down"]["point_count"],
+                    changed["instances"][0]["point_count"],
+                )
             dataset = ProcessedPlantDataset(dataset_root)
             self.assertEqual(len(dataset), 2)
 
