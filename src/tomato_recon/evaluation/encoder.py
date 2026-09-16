@@ -10,7 +10,12 @@ from torch import Tensor
 
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import IGNORE_INDEX, EncoderOutput, PlantBatch, PlantSample, TopologyRole
-from tomato_recon.models.encoders.base import encoder_losses, nearest_skeleton_targets
+from tomato_recon.models.encoders.base import (
+    DEFAULT_SKELETON_THRESHOLD_M,
+    JUNCTION_THRESHOLD_MULTIPLIER,
+    encoder_losses,
+    nearest_skeleton_targets,
+)
 from tomato_recon.train.common import TrainingProgress
 
 SEMANTIC_NAMES = ("background", "leaf", "main_stem", "support_pole", "side_stem")
@@ -21,7 +26,7 @@ class EncoderMetricAccumulator:
         self,
         num_classes: int,
         *,
-        skeleton_threshold_m: float = 0.006,
+        skeleton_threshold_m: float = DEFAULT_SKELETON_THRESHOLD_M,
         probability_threshold: float = 0.5,
     ) -> None:
         self.num_classes = num_classes
@@ -85,7 +90,7 @@ class EncoderMetricAccumulator:
             )
             junction_target = (
                 junction_distance.min(dim=-1).values
-                <= 1.5 * self.skeleton_threshold_m
+                <= JUNCTION_THRESHOLD_MULTIPLIER * self.skeleton_threshold_m
             )
         else:
             junction_target = torch.zeros_like(valid)
@@ -210,7 +215,7 @@ def encoder_metrics_for_sample(
     sample: PlantSample,
     output: EncoderOutput,
     *,
-    skeleton_threshold_m: float = 0.006,
+    skeleton_threshold_m: float = DEFAULT_SKELETON_THRESHOLD_M,
     probability_threshold: float = 0.5,
 ) -> dict[str, float]:
     batch = collate_plant_samples([sample]).to(output.point_xyz.device)

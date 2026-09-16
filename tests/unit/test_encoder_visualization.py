@@ -67,7 +67,7 @@ class EncoderVisualizationTests(unittest.TestCase):
             with torch.inference_mode():
                 output = model(batch.xyz, torch.cat([batch.rgb, batch.normals], dim=-1),
                                batch.point_valid)
-                metrics = encoder_metrics(partial, output, skeleton_threshold_m=0.006,
+                metrics = encoder_metrics(partial, output, skeleton_threshold_m=0.01,
                                           probability_threshold=0.5)
             self.assertEqual(output.semantic_logits.shape[1], len(partial.xyz))
             self.assertTrue(all(math.isfinite(value) for value in metrics.values()))
@@ -106,7 +106,7 @@ class EncoderVisualizationTests(unittest.TestCase):
             metrics = encoder_metrics(
                 sample,
                 output,
-                skeleton_threshold_m=0.006,
+                skeleton_threshold_m=0.01,
                 probability_threshold=0.5,
             )
 

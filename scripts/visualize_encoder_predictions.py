@@ -24,7 +24,11 @@ from tomato_recon.data.processed import (
 )
 from tomato_recon.data.top_down import load_top_down_sample
 from tomato_recon.evaluation.encoder import EncoderMetricAccumulator, encoder_metrics_for_sample
-from tomato_recon.models.encoders.base import PointEncoder, encoder_losses
+from tomato_recon.models.encoders.base import (
+    DEFAULT_SKELETON_THRESHOLD_M,
+    PointEncoder,
+    encoder_losses,
+)
 from tomato_recon.models.encoders.registry import create_backbone_from_config
 from tomato_recon.train.common import checkpoint_sha256, load_checkpoint
 
@@ -377,7 +381,11 @@ def main() -> None:
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--probability-threshold", type=float, default=0.5)
-    parser.add_argument("--skeleton-threshold-m", type=float, default=0.006)
+    parser.add_argument(
+        "--skeleton-threshold-m",
+        type=float,
+        default=DEFAULT_SKELETON_THRESHOLD_M,
+    )
     parser.add_argument("--max-render-points", type=int, default=50_000)
     args = parser.parse_args()
     if args.output is None:
