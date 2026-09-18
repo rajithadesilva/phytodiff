@@ -329,6 +329,12 @@ plus root metrics and a summary manifest. Both commands run in Docker;
 `STAGE1_VIS_OUTPUT` can override the output directory. The underlying script accepts
 `--pcl-types full top_down side`.
 
+The two probability panels share a bottom Turbo colourbar. Junction detections are
+shown explicitly: cyan dots with black outlines are ground truth, while magenta dots
+with white outlines are probability-thresholded, spatially clustered predictions.
+Both junction marker types use three times the skeleton-node radius.
+These display-only centroids do not affect Junction F1 or any other evaluation metric.
+
 Each selected cloud alone drives its encoder inference, metrics, and all six panels.
 Derived input retains the labels of its saved points and uses the full plant's
 ground-truth skeleton; point metrics cover only retained input points. The checkpoint

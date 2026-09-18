@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -10,8 +11,20 @@ from unittest.mock import patch
 import torch
 from PIL import Image
 
-from scripts.visualize_encoder_predictions import encoder_metrics, main, render_encoder_prediction
-from scripts.visualize_encoder_predictions import _select_samples
+from scripts.visualize_encoder_predictions import (
+    FOOTER_HEIGHT,
+    HEADER_HEIGHT,
+    JUNCTION_MARKER_RADIUS,
+    PANEL_SIZE,
+    SKELETON_NODE_RADIUS,
+    _predicted_junction_centroids,
+    _probability_colourbar_image,
+    _probability_colours,
+    _select_samples,
+    encoder_metrics,
+    main,
+    render_encoder_prediction,
+)
 from tomato_recon.config import load_config
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.processed import (
@@ -140,12 +153,79 @@ class EncoderVisualizationTests(unittest.TestCase):
 
         with TemporaryDirectory() as directory:
             output_path = Path(directory) / "preview.png"
-            render_encoder_prediction(
-                sample, output, metrics, output_path, max_render_points=64
-            )
+            with patch(
+                "scripts.visualize_encoder_predictions._probability_colourbar_image",
+                wraps=_probability_colourbar_image,
+            ) as render_colourbar:
+                render_encoder_prediction(
+                    sample, output, metrics, output_path, max_render_points=64
+                )
+            render_colourbar.assert_called_once_with()
             self.assertTrue(output_path.is_file())
             with Image.open(output_path) as image:
-                self.assertEqual(image.size, (6 * 390, 70 + 390 + 70))
+                self.assertEqual(
+                    image.size,
+                    (6 * PANEL_SIZE, HEADER_HEIGHT + PANEL_SIZE + FOOTER_HEIGHT),
+                )
+            no_candidates_path = Path(directory) / "no_predicted_junctions.png"
+            no_candidates_output = replace(
+                output,
+                junction_logits=torch.full_like(output.junction_logits, -100.0),
+            )
+            render_encoder_prediction(
+                sample,
+                no_candidates_output,
+                metrics,
+                no_candidates_path,
+                max_render_points=64,
+            )
+            self.assertTrue(no_candidates_path.is_file())
+
+    def test_turbo_probability_mapping_and_junction_marker_size(self) -> None:
+        colours = _probability_colours(torch.tensor([0.0, 0.25, 0.5, 0.75, 1.0]))
+        self.assertEqual(colours.dtype, torch.uint8)
+        self.assertEqual(colours.shape, (5, 3))
+        torch.testing.assert_close(colours[0], torch.tensor([48, 18, 59], dtype=torch.uint8))
+        torch.testing.assert_close(colours[-1], torch.tensor([122, 4, 3], dtype=torch.uint8))
+        self.assertEqual(JUNCTION_MARKER_RADIUS, 3 * SKELETON_NODE_RADIUS)
+
+    def test_predicted_junction_clustering_uses_weighted_centroids(self) -> None:
+        xyz = torch.tensor(
+            [
+                [0.00, 0.0, 0.0],
+                [0.01, 0.0, 0.0],
+                [0.10, 0.0, 0.0],
+                [0.11, 0.0, 0.0],
+                [0.105, 0.0, 0.0],
+            ]
+        )
+        probability = torch.tensor([0.6, 0.9, 0.7, 0.8, 1.0])
+        valid = torch.tensor([True, True, True, True, False])
+        centroids = _predicted_junction_centroids(
+            xyz,
+            probability,
+            valid,
+            probability_threshold=0.5,
+            clustering_radius_m=0.02,
+        )
+        centroids = centroids[centroids[:, 0].argsort()]
+        expected = torch.tensor(
+            [
+                [(0.00 * 0.6 + 0.01 * 0.9) / 1.5, 0.0, 0.0],
+                [(0.10 * 0.7 + 0.11 * 0.8) / 1.5, 0.0, 0.0],
+            ]
+        )
+        torch.testing.assert_close(centroids, expected)
+
+    def test_predicted_junction_clustering_handles_no_candidates(self) -> None:
+        centroids = _predicted_junction_centroids(
+            torch.zeros((3, 3)),
+            torch.tensor([0.1, 0.2, 0.3]),
+            torch.ones(3, dtype=torch.bool),
+            probability_threshold=0.5,
+            clustering_radius_m=0.02,
+        )
+        self.assertEqual(centroids.shape, (0, 3))
 
     def test_multiview_command_fans_out_outputs_in_array_order(self) -> None:
         with TemporaryDirectory() as directory:

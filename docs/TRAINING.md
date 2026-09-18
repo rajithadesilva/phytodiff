@@ -62,7 +62,17 @@ all seven nonempty combinations of `full`, `top_down`, and `side`, then evaluate
 seven checkpoints on all seven test configurations. The 49-cell JSON/CSV/Markdown
 reports and five task heatmaps are written under `outputs/stage1_ablation_2/`.
 
-Each plant PNG contains six front-view panels: input RGB, ground-truth semantics, predicted semantics, ground-truth skeleton, predicted skeleton probability with offset-corrected centreline points, and predicted junction probability. Cyan rings in the junction panel mark ground-truth junctions. The command defaults to `test` and writes `metrics.json` for the selected plants. Use `--plant-id PLANT_ID` (repeatable) to select exact plants, `--count 0` for all 5 test plants, or `--device cpu` to disable GPU inference. Run this only after model selection is complete.
+Each plant PNG contains six front-view panels: input RGB, ground-truth semantics,
+predicted semantics, ground-truth structure, predicted skeleton probability with
+offset-corrected centreline points, and junction probability with detections. Both
+probability panels use the shared Turbo colourbar. In the junction panel, small cyan
+dots with black outlines mark ground-truth junctions and magenta dots with white
+outlines mark visualization-only clustered prediction centroids; both use the same
+marker size, three times the ground-truth skeleton-node radius. The command defaults
+to `test` and writes
+`metrics.json` for the selected plants. Use `--plant-id PLANT_ID` (repeatable) to
+select exact plants, `--count 0` for all 5 test plants, or `--device cpu` to disable
+GPU inference. Run this only after model selection is complete.
 
 Every source retains its plant-level split. The combined selector is the union of those
 source splits. Do not move plants between partitions, use test previews to tune thresholds,

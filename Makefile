@@ -3,7 +3,7 @@
 DATASET_ROOT ?= data/dataset
 TOP_DOWN_OCCLUSION_RADIUS_M ?= 0.003
 TOP_DOWN_DEPTH_TOLERANCE_M ?= 0.001
-SIDE_OCCLUSION_RADIUS_M ?= 0.001
+SIDE_OCCLUSION_RADIUS_M ?= 0.003
 SIDE_DEPTH_TOLERANCE_M ?= 0.001
 DATASET_VIS_OUTPUT ?= outputs/dataset_preview
 DATASET_VIS_COUNT ?= 0
@@ -12,11 +12,14 @@ DATASET_VIS_ELEVATION_DEG ?= 15
 
 STAGE1_CHECKPOINT ?= outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
 STAGE1_PROCESSED_ROOT ?= data/dataset
-STAGE1_PCL_TYPES ?= full
+# Point-cloud types: full, top_down, side. Use a space-separated ordered list.
+# Example: STAGE1_PCL_TYPES= full top_down side for Stage 1 visualization.
+STAGE1_PCL_TYPES ?= full top_down side
 STAGE1_VIS_OUTPUT ?= outputs/stage1_ablation_1/combined/kpconvx/test_visualizations$(if $(filter 1,$(words $(STAGE1_PCL_TYPES))),$(if $(filter full,$(STAGE1_PCL_TYPES)),,_$(firstword $(STAGE1_PCL_TYPES))),)
 STAGE1_ABLATION1_OUTPUT ?= outputs/stage1_ablation_1
 STAGE1_ABLATION1_DATASET ?= combined
-STAGE1_ABLATION1_PCL_TYPES ?= full
+# Command-line override: make stage1-ablation-1 STAGE1_ABLATION1_PCL_TYPES="full top_down side"
+STAGE1_ABLATION1_PCL_TYPES ?= full top_down side
 STAGE1_ABLATION1_RESUME ?=
 STAGE1_ABLATION2_OUTPUT ?= outputs/stage1_ablation_2
 STAGE1_ABLATION2_ABLATION1_OUTPUT ?= $(STAGE1_ABLATION1_OUTPUT)

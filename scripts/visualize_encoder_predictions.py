@@ -11,9 +11,16 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
+from matplotlib import colormaps
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
+from matplotlib.figure import Figure
 from omegaconf import OmegaConf
 from PIL import Image, ImageDraw
+from scipy.spatial import cKDTree
 
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import IGNORE_INDEX, EncoderOutput, PlantSample, TopologyRole
@@ -48,6 +55,23 @@ SEMANTIC_NAMES = {
     4: "side stem",
 }
 
+PANEL_SIZE = 390
+HEADER_HEIGHT = 70
+FOOTER_HEIGHT = 145
+PANEL_MARGIN = 22
+SKELETON_NODE_RADIUS = 2
+JUNCTION_MARKER_RADIUS = 3 * SKELETON_NODE_RADIUS
+MARKER_OUTLINE_WIDTH = 1
+GROUND_TRUTH_EDGE_COLOUR = (220, 45, 35)
+GROUND_TRUTH_NODE_COLOUR = (120, 0, 0)
+GROUND_TRUTH_JUNCTION_FILL = (0, 255, 255)
+GROUND_TRUTH_JUNCTION_OUTLINE = (0, 0, 0)
+PREDICTED_JUNCTION_FILL = (255, 0, 255)
+PREDICTED_JUNCTION_OUTLINE = (255, 255, 255)
+CENTRELINE_COLOUR = (0, 255, 255)
+STRUCTURE_POINT_COLOUR = (205, 205, 205)
+PROBABILITY_COLOURBAR_TICKS = (0.0, 0.25, 0.5, 0.75, 1.0)
+
 
 def _device(value: str) -> torch.device:
     if value == "auto":
@@ -67,19 +91,85 @@ def _sample_indices(length: int, limit: int) -> torch.Tensor:
     return torch.linspace(0, length - 1, steps=limit).round().long().unique()
 
 
-def _probability_colours(probability: torch.Tensor, kind: str) -> torch.Tensor:
+def _probability_colours(probability: torch.Tensor) -> torch.Tensor:
+    """Map probabilities to RGB with Matplotlib's standard Turbo colormap."""
     probability = probability.detach().cpu().float().clamp(0, 1)
-    if kind == "skeleton":
-        # Dark blue -> cyan -> yellow.
-        red = 255 * probability.square()
-        green = 35 + 220 * probability
-        blue = 210 * (1 - probability) + 35
-    else:
-        # Dark purple -> magenta -> yellow.
-        red = 45 + 210 * probability
-        green = 25 + 220 * probability.square()
-        blue = 120 + 120 * (1 - probability)
-    return torch.stack([red, green, blue], dim=-1).byte()
+    rgba = colormaps["turbo"](probability.numpy())
+    return torch.from_numpy(np.rint(rgba[..., :3] * 255).astype(np.uint8))
+
+
+def _probability_colourbar_image(width: int = 760, height: int = 80) -> Image.Image:
+    """Render the shared Turbo probability colourbar for compositing into the PNG."""
+    dpi = 100
+    figure = Figure(figsize=(width / dpi, height / dpi), dpi=dpi, facecolor="white")
+    FigureCanvasAgg(figure)
+    axis = figure.add_axes((0.08, 0.56, 0.84, 0.19))
+    colourbar = figure.colorbar(
+        ScalarMappable(norm=Normalize(vmin=0.0, vmax=1.0), cmap=colormaps["turbo"]),
+        cax=axis,
+        orientation="horizontal",
+        ticks=PROBABILITY_COLOURBAR_TICKS,
+    )
+    colourbar.set_label("Predicted probability", labelpad=2)
+    colourbar.ax.tick_params(labelsize=8, length=2, pad=1)
+    figure.canvas.draw()
+    rgba = np.asarray(figure.canvas.buffer_rgba()).copy()
+    return Image.fromarray(rgba, mode="RGBA").convert("RGB")
+
+
+def _predicted_junction_centroids(
+    xyz: torch.Tensor,
+    probability: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    probability_threshold: float,
+    clustering_radius_m: float,
+) -> torch.Tensor:
+    """Return probability-weighted centroids of radius-connected positive points."""
+    if clustering_radius_m <= 0:
+        raise ValueError("clustering_radius_m must be positive")
+
+    xyz = xyz.detach().cpu().float()
+    probability = probability.detach().cpu().float()
+    valid_mask = valid_mask.detach().cpu().bool()
+    candidate_mask = valid_mask & (probability >= probability_threshold)
+    candidate_xyz = xyz[candidate_mask]
+    candidate_probability = probability[candidate_mask]
+    if not len(candidate_xyz):
+        return xyz.new_empty((0, 3))
+
+    # SciPy is already a project dependency. A KD-tree avoids adding a clustering package.
+    pairs = cKDTree(candidate_xyz.numpy()).query_pairs(
+        clustering_radius_m, output_type="ndarray"
+    )
+    parents = list(range(len(candidate_xyz)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(first: int, second: int) -> None:
+        first_root = find(first)
+        second_root = find(second)
+        if first_root != second_root:
+            parents[second_root] = first_root
+
+    for first, second in pairs:
+        union(int(first), int(second))
+
+    clusters: dict[int, list[int]] = {}
+    for index in range(len(candidate_xyz)):
+        clusters.setdefault(find(index), []).append(index)
+
+    centroids = []
+    for indices in clusters.values():
+        cluster_indices = torch.tensor(indices, dtype=torch.long)
+        weights = candidate_probability[cluster_indices]
+        centroid = (candidate_xyz[cluster_indices] * weights[:, None]).sum(dim=0)
+        centroids.append(centroid / weights.sum().clamp_min(torch.finfo(weights.dtype).eps))
+    return torch.stack(centroids)
 
 
 def _semantic_colours(labels: torch.Tensor) -> torch.Tensor:
@@ -117,6 +207,23 @@ def _draw_points(draw: ImageDraw.ImageDraw, pixels: torch.Tensor, colours: torch
         )
 
 
+def _draw_marker(
+    draw: ImageDraw.ImageDraw,
+    point: torch.Tensor | tuple[float, float],
+    *,
+    fill: tuple[int, int, int],
+    outline: tuple[int, int, int] | None = None,
+    radius: int = SKELETON_NODE_RADIUS,
+) -> None:
+    x, y = float(point[0]), float(point[1])
+    draw.ellipse(
+        (x - radius, y - radius, x + radius, y + radius),
+        fill=fill,
+        outline=outline,
+        width=MARKER_OUTLINE_WIDTH,
+    )
+
+
 def encoder_metrics(
     sample: PlantSample,
     output: EncoderOutput,
@@ -142,6 +249,8 @@ def render_encoder_prediction(
     path: Path,
     *,
     probability_threshold: float = 0.5,
+    skeleton_threshold_m: float = 0.01,
+    junction_threshold_multiplier: float = 2.0,
     max_render_points: int = 50_000,
 ) -> None:
     """Write the six Stage 1 diagnostic panels for one plant."""
@@ -149,16 +258,14 @@ def render_encoder_prediction(
         "1  Input RGB",
         "2  Ground-truth semantics",
         "3  Predicted semantics",
-        "4  Ground-truth skeleton",
+        "4  Ground-truth structure",
         "5  Skeleton probability + offset",
-        "6  Junction probability",
+        "6  Junction probability + detections",
     )
-    panel_size = 390
-    header = 70
-    footer = 70
-    margin = 22
     canvas = Image.new(
-        "RGB", (panel_size * len(titles), header + panel_size + footer), "white"
+        "RGB",
+        (PANEL_SIZE * len(titles), HEADER_HEIGHT + PANEL_SIZE + FOOTER_HEIGHT),
+        "white",
     )
     draw = ImageDraw.Draw(canvas)
     draw.text(
@@ -191,8 +298,15 @@ def render_encoder_prediction(
     skeleton_probability = output.skeleton_logits[0, :, 0].sigmoid().detach().cpu()
     junction_probability = output.junction_logits[0, :, 0].sigmoid().detach().cpu()
     centreline_offset = output.centreline_offset[0].detach().cpu()
-    skeleton_colours = _probability_colours(skeleton_probability[render_indices], "skeleton")
-    junction_colours = _probability_colours(junction_probability[render_indices], "junction")
+    skeleton_colours = _probability_colours(skeleton_probability[render_indices])
+    junction_colours = _probability_colours(junction_probability[render_indices])
+    predicted_junction_xyz = _predicted_junction_centroids(
+        sample.xyz,
+        junction_probability,
+        sample.point_valid,
+        probability_threshold=probability_threshold,
+        clustering_radius_m=junction_threshold_multiplier * skeleton_threshold_m,
+    )
 
     node_indices = sample.node_valid.nonzero(as_tuple=False).flatten()
     node_xyz = sample.node_xyz[node_indices].cpu()
@@ -200,31 +314,38 @@ def render_encoder_prediction(
     bounds = bounds_xyz[:, [0, 2]]
     minimum = bounds.amin(dim=0)
     maximum = bounds.amax(dim=0)
-    scale = (panel_size - 2 * margin) / float((maximum - minimum).max().clamp_min(1e-6))
+    scale = (PANEL_SIZE - 2 * PANEL_MARGIN) / float(
+        (maximum - minimum).max().clamp_min(1e-6)
+    )
     point_panels = {
         0: point_rgb,
         1: semantic_gt,
         2: semantic_prediction,
-        3: torch.full_like(point_rgb, 205),
+        3: torch.tensor(STRUCTURE_POINT_COLOUR, dtype=torch.uint8).repeat(len(point_rgb), 1),
         4: skeleton_colours,
         5: junction_colours,
     }
 
     for panel_index, title in enumerate(titles):
-        left = panel_index * panel_size
+        left = panel_index * PANEL_SIZE
         draw.rectangle(
-            (left, header, left + panel_size - 1, header + panel_size - 1),
+            (
+                left,
+                HEADER_HEIGHT,
+                left + PANEL_SIZE - 1,
+                HEADER_HEIGHT + PANEL_SIZE - 1,
+            ),
             outline=(205, 205, 205),
         )
-        draw.text((left + 9, header + 8), title, fill=(15, 15, 15))
+        draw.text((left + 9, HEADER_HEIGHT + 8), title, fill=(15, 15, 15))
         pixels = _project(
             point_xyz,
             minimum,
             scale,
             left=left,
-            top=header,
-            panel_size=panel_size,
-            margin=margin,
+            top=HEADER_HEIGHT,
+            panel_size=PANEL_SIZE,
+            margin=PANEL_MARGIN,
         )
         _draw_points(draw, pixels, point_panels[panel_index])
 
@@ -234,9 +355,9 @@ def render_encoder_prediction(
                 minimum,
                 scale,
                 left=left,
-                top=header,
-                panel_size=panel_size,
-                margin=margin,
+                top=HEADER_HEIGHT,
+                panel_size=PANEL_SIZE,
+                margin=PANEL_MARGIN,
             )
             remap = {old: new for new, old in enumerate(node_indices.tolist())}
             for child in node_indices.tolist():
@@ -246,12 +367,11 @@ def render_encoder_prediction(
                     b = node_pixels[remap[child]]
                     draw.line(
                         (float(a[0]), float(a[1]), float(b[0]), float(b[1])),
-                        fill=(220, 45, 35),
+                        fill=GROUND_TRUTH_EDGE_COLOUR,
                         width=2,
                     )
             for node in node_pixels:
-                x, y = float(node[0]), float(node[1])
-                draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=(120, 0, 0))
+                _draw_marker(draw, node, fill=GROUND_TRUTH_NODE_COLOUR)
 
         if panel_index == 4:
             high_probability = sample.point_valid.cpu() & (
@@ -269,50 +389,104 @@ def render_encoder_prediction(
                     minimum,
                     scale,
                     left=left,
-                    top=header,
-                    panel_size=panel_size,
-                    margin=margin,
+                    top=HEADER_HEIGHT,
+                    panel_size=PANEL_SIZE,
+                    margin=PANEL_MARGIN,
                 )
                 _draw_points(
                     draw,
                     corrected_pixels,
-                    torch.tensor([[0, 255, 255]], dtype=torch.uint8).repeat(
+                    torch.tensor([CENTRELINE_COLOUR], dtype=torch.uint8).repeat(
                         len(corrected_pixels), 1
                     ),
                 )
 
-        if panel_index == 5 and len(node_xyz):
-            junction_nodes = node_indices[
-                sample.topology_role[node_indices] == int(TopologyRole.JUNCTION)
-            ]
-            if len(junction_nodes):
-                junction_pixels = _project(
-                    sample.node_xyz[junction_nodes].cpu(),
+        if panel_index == 5:
+            if len(node_xyz):
+                junction_nodes = node_indices[
+                    sample.topology_role[node_indices] == int(TopologyRole.JUNCTION)
+                ]
+                if len(junction_nodes):
+                    junction_pixels = _project(
+                        sample.node_xyz[junction_nodes].cpu(),
+                        minimum,
+                        scale,
+                        left=left,
+                        top=HEADER_HEIGHT,
+                        panel_size=PANEL_SIZE,
+                        margin=PANEL_MARGIN,
+                    )
+                    for node in junction_pixels:
+                        _draw_marker(
+                            draw,
+                            node,
+                            fill=GROUND_TRUTH_JUNCTION_FILL,
+                            outline=GROUND_TRUTH_JUNCTION_OUTLINE,
+                            radius=JUNCTION_MARKER_RADIUS,
+                        )
+            if len(predicted_junction_xyz):
+                predicted_junction_pixels = _project(
+                    predicted_junction_xyz,
                     minimum,
                     scale,
                     left=left,
-                    top=header,
-                    panel_size=panel_size,
-                    margin=margin,
+                    top=HEADER_HEIGHT,
+                    panel_size=PANEL_SIZE,
+                    margin=PANEL_MARGIN,
                 )
-                for node in junction_pixels:
-                    x, y = float(node[0]), float(node[1])
-                    draw.ellipse(
-                        (x - 5, y - 5, x + 5, y + 5), outline=(0, 255, 255), width=2
+                for node in predicted_junction_pixels:
+                    _draw_marker(
+                        draw,
+                        node,
+                        fill=PREDICTED_JUNCTION_FILL,
+                        outline=PREDICTED_JUNCTION_OUTLINE,
+                        radius=JUNCTION_MARKER_RADIUS,
                     )
 
-    footer_y = header + panel_size + 12
+    footer_y = HEADER_HEIGHT + PANEL_SIZE + 12
     x = 14
     for semantic_class, name in SEMANTIC_NAMES.items():
         colour = SEMANTIC_COLOURS[semantic_class]
         draw.rectangle((x, footer_y, x + 13, footer_y + 13), fill=colour)
         draw.text((x + 18, footer_y), name, fill=(40, 40, 40))
         x += 105
-    draw.text(
-        (panel_size * 3 + 18, footer_y),
-        "probability: dark = low, yellow = high | GT skeleton = red | "
-        "predicted offset centreline / GT junction markers = cyan",
-        fill=(45, 45, 45),
+    legend_x = 570
+    draw.line(
+        (legend_x, footer_y + 6, legend_x + 18, footer_y + 6),
+        fill=GROUND_TRUTH_EDGE_COLOUR,
+        width=2,
+    )
+    draw.text((legend_x + 23, footer_y), "GT skeleton edge", fill=(45, 45, 45))
+    legend_x += 150
+    _draw_marker(draw, (legend_x + 3, footer_y + 6), fill=GROUND_TRUTH_NODE_COLOUR)
+    draw.text((legend_x + 12, footer_y), "GT skeleton node", fill=(45, 45, 45))
+    legend_x += 155
+    _draw_marker(
+        draw,
+        (legend_x + 3, footer_y + 6),
+        fill=GROUND_TRUTH_JUNCTION_FILL,
+        outline=GROUND_TRUTH_JUNCTION_OUTLINE,
+        radius=JUNCTION_MARKER_RADIUS,
+    )
+    draw.text((legend_x + 12, footer_y), "GT junction", fill=(45, 45, 45))
+    legend_x += 115
+    _draw_marker(
+        draw,
+        (legend_x + 3, footer_y + 6),
+        fill=PREDICTED_JUNCTION_FILL,
+        outline=PREDICTED_JUNCTION_OUTLINE,
+        radius=JUNCTION_MARKER_RADIUS,
+    )
+    draw.text((legend_x + 12, footer_y), "predicted junction", fill=(45, 45, 45))
+    legend_x += 145
+    for offset in range(5):
+        draw.point((legend_x + offset, footer_y + 6), fill=CENTRELINE_COLOUR)
+    draw.text((legend_x + 12, footer_y), "offset-corrected centreline", fill=(45, 45, 45))
+
+    colourbar = _probability_colourbar_image()
+    canvas.paste(
+        colourbar,
+        ((canvas.width - colourbar.width) // 2, HEADER_HEIGHT + PANEL_SIZE + 48),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(path)
@@ -425,6 +599,8 @@ def _run_view(
                 metrics,
                 output_path,
                 probability_threshold=args.probability_threshold,
+                skeleton_threshold_m=skeleton_threshold_m,
+                junction_threshold_multiplier=junction_threshold_multiplier,
                 max_render_points=args.max_render_points,
             )
             render = {
