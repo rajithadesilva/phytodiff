@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -32,7 +33,7 @@ _DATASET_ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _PLANT_FOLDER = re.compile(r"^plant_(\d+)$")
 COMBINED_DATASET = "combined"
-POINT_CLOUD_TYPES = ("full", "top_down", "both")
+POINT_CLOUD_TYPES = ("full", "top_down", "side")
 
 
 def _plant_number(value: str, *, context: str) -> int:
@@ -175,14 +176,25 @@ def normalise_dataset_selection(dataset: str | None) -> str:
     return selection
 
 
-def normalise_point_cloud_type(pcl_type: str | None) -> str:
-    """Validate the full/top-down selection used by model training."""
-    selection = "full" if pcl_type is None else str(pcl_type).strip().lower()
-    if selection not in POINT_CLOUD_TYPES:
-        raise ValueError(
-            f"data.pcl_type must be one of {POINT_CLOUD_TYPES}, got {pcl_type!r}"
-        )
-    return selection
+def normalise_point_cloud_types(pcl_types: Sequence[str]) -> tuple[str, ...]:
+    """Validate and preserve an ordered array of model input views."""
+    if isinstance(pcl_types, (str, bytes)) or not isinstance(pcl_types, Sequence):
+        raise ValueError("data.pcl_types must be a non-empty array")
+    selections: list[str] = []
+    for value in pcl_types:
+        if not isinstance(value, str):
+            raise ValueError("data.pcl_types entries must be strings")
+        selection = value.strip().lower()
+        if selection not in POINT_CLOUD_TYPES:
+            raise ValueError(
+                f"data.pcl_types entries must be one of {POINT_CLOUD_TYPES}, got {value!r}"
+            )
+        selections.append(selection)
+    if not selections:
+        raise ValueError("data.pcl_types must contain at least one entry")
+    if len(selections) != len(set(selections)):
+        raise ValueError("data.pcl_types must not contain duplicates")
+    return tuple(selections)
 
 
 def _select_manifest_instances(
@@ -435,36 +447,39 @@ class ProcessedPlantDataset(Dataset[PlantSample]):
 
 
 class PointCloudViewDataset(Dataset[PlantSample]):
-    """Expose full clouds, top-down clouds, or both for model input."""
+    """Expose one sample per plant and configured point-cloud view."""
 
     def __init__(
         self,
         root: str | Path,
         split: str | None = None,
         dataset: str | None = COMBINED_DATASET,
-        pcl_type: str = "full",
+        pcl_types: Sequence[str] = ("full",),
     ) -> None:
         self.full_dataset = ProcessedPlantDataset(root, split=split, dataset=dataset)
-        self.pcl_type = normalise_point_cloud_type(pcl_type)
-        self.variants = ("full", "top_down") if self.pcl_type == "both" else (self.pcl_type,)
+        self.pcl_types = normalise_point_cloud_types(pcl_types)
         self.dataset = self.full_dataset.dataset
         self.dataset_ids = self.full_dataset.dataset_ids
 
     def __len__(self) -> int:
-        return len(self.full_dataset) * len(self.variants)
+        return len(self.full_dataset) * len(self.pcl_types)
 
     def __getitem__(self, index: int) -> PlantSample:
         if index < 0:
             index += len(self)
         if index < 0 or index >= len(self):
             raise IndexError(index)
-        source_index, variant_index = divmod(index, len(self.variants))
+        source_index, variant_index = divmod(index, len(self.pcl_types))
         sample = self.full_dataset[source_index]
-        variant = self.variants[variant_index]
+        variant = self.pcl_types[variant_index]
         if variant == "top_down":
             from tomato_recon.data.top_down import load_top_down_sample
 
             return load_top_down_sample(self.full_dataset.paths[source_index], sample)
+        if variant == "side":
+            from tomato_recon.data.side import load_side_sample
+
+            return load_side_sample(self.full_dataset.paths[source_index], sample)
         return replace(sample, metadata={**sample.metadata, "pcl_type": "full"})
 
 

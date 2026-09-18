@@ -37,6 +37,7 @@ from tomato_recon.data.processed import (
     write_processed_dataset_manifest,
 )
 from tomato_recon.data.tomatowur import TomatoWURReader
+from tomato_recon.data.side import SideSettings, ensure_side
 from tomato_recon.data.top_down import TopDownSettings, ensure_top_down
 
 
@@ -457,6 +458,7 @@ def preprocess_dataset(
 ) -> dict[str, Any]:
     dataset_identity = processed_dataset_identity(cfg)
     top_down_settings = TopDownSettings.from_config(cfg)
+    side_settings = SideSettings.from_config(cfg)
     output_root = resolve_processed_dataset_root(cfg)
     if str(cfg.get("skeleton_mode", "")) != "official_gt_direct":
         raise ValueError(
@@ -506,6 +508,7 @@ def preprocess_dataset(
     hash_config.pop("splits", None)
     hash_config.pop("split_files", None)
     hash_config.pop("top_down", None)
+    hash_config.pop("side", None)
     preprocessing_hash = canonical_hash(hash_config)
     dataset_manifest["datasets"][dataset_identity["dataset"]] = {
         **dataset_identity,
@@ -623,12 +626,20 @@ def preprocess_dataset(
             )
             if unchanged:
                 top_down_action = ensure_top_down(output_root, manifest_entry, top_down_settings)
-                if top_down_action == "generated":
+                side_action = ensure_side(output_root, manifest_entry, side_settings)
+                if "generated" in {top_down_action, side_action}:
                     write_processed_dataset_manifest(output_root, dataset_manifest)
+                if top_down_action == "generated":
                     _emit_progress(
                         progress, "top_down", **progress_details,
                         instance_id=global_instance_id,
                         point_count=manifest_entry["top_down"]["point_count"],
+                    )
+                if side_action == "generated":
+                    _emit_progress(
+                        progress, "side", **progress_details,
+                        instance_id=global_instance_id,
+                        point_count=manifest_entry["side"]["point_count"],
                     )
                 split_counts[split] += 1
                 skipped_instance_count += 1
@@ -713,6 +724,7 @@ def preprocess_dataset(
             else:
                 context_path.unlink(missing_ok=True)
             ensure_top_down(output_root, manifest_entry, top_down_settings)
+            ensure_side(output_root, manifest_entry, side_settings)
             split_counts[split] += 1
             manifest_entry.update(
                 {

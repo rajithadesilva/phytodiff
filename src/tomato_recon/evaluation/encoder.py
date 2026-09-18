@@ -10,12 +10,7 @@ from torch import Tensor
 
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import IGNORE_INDEX, EncoderOutput, PlantBatch, PlantSample, TopologyRole
-from tomato_recon.models.encoders.base import (
-    DEFAULT_SKELETON_THRESHOLD_M,
-    JUNCTION_THRESHOLD_MULTIPLIER,
-    encoder_losses,
-    nearest_skeleton_targets,
-)
+from tomato_recon.models.encoders.base import encoder_losses, nearest_skeleton_targets
 from tomato_recon.train.common import TrainingProgress
 
 SEMANTIC_NAMES = ("background", "leaf", "main_stem", "support_pole", "side_stem")
@@ -26,11 +21,13 @@ class EncoderMetricAccumulator:
         self,
         num_classes: int,
         *,
-        skeleton_threshold_m: float = DEFAULT_SKELETON_THRESHOLD_M,
+        skeleton_threshold_m: float,
+        junction_threshold_multiplier: float,
         probability_threshold: float = 0.5,
     ) -> None:
         self.num_classes = num_classes
         self.skeleton_threshold_m = skeleton_threshold_m
+        self.junction_threshold_multiplier = junction_threshold_multiplier
         self.probability_threshold = probability_threshold
         self.semantic_intersection = torch.zeros(num_classes, dtype=torch.float64)
         self.semantic_union = torch.zeros(num_classes, dtype=torch.float64)
@@ -90,7 +87,7 @@ class EncoderMetricAccumulator:
             )
             junction_target = (
                 junction_distance.min(dim=-1).values
-                <= JUNCTION_THRESHOLD_MULTIPLIER * self.skeleton_threshold_m
+                <= self.junction_threshold_multiplier * self.skeleton_threshold_m
             )
         else:
             junction_target = torch.zeros_like(valid)
@@ -169,6 +166,8 @@ def evaluate_encoder_model(
     device: torch.device,
     *,
     num_classes: int,
+    skeleton_threshold_m: float,
+    junction_threshold_multiplier: float,
     epoch: int = 0,
     epoch_total: int = 1,
     stage: str = "encoder/val",
@@ -177,7 +176,11 @@ def evaluate_encoder_model(
 ) -> dict[str, float]:
     total_batches = len(loader)  # type: ignore[arg-type]
     progress = TrainingProgress(stage, epoch + 1, epoch_total, total_batches)
-    accumulator = EncoderMetricAccumulator(num_classes)
+    accumulator = EncoderMetricAccumulator(
+        num_classes,
+        skeleton_threshold_m=skeleton_threshold_m,
+        junction_threshold_multiplier=junction_threshold_multiplier,
+    )
     running_losses: dict[str, float] = {}
     steps = 0
     model.eval()
@@ -196,6 +199,8 @@ def evaluate_encoder_model(
                 batch.node_xyz,
                 batch.node_valid,
                 batch.topology_role,
+                skeleton_threshold_m=skeleton_threshold_m,
+                junction_threshold_multiplier=junction_threshold_multiplier,
             )
             accumulator.update(batch, output, losses)
             for name, value in losses.items():
@@ -215,7 +220,8 @@ def encoder_metrics_for_sample(
     sample: PlantSample,
     output: EncoderOutput,
     *,
-    skeleton_threshold_m: float = DEFAULT_SKELETON_THRESHOLD_M,
+    skeleton_threshold_m: float,
+    junction_threshold_multiplier: float,
     probability_threshold: float = 0.5,
 ) -> dict[str, float]:
     batch = collate_plant_samples([sample]).to(output.point_xyz.device)
@@ -227,10 +233,12 @@ def encoder_metrics_for_sample(
         batch.node_valid,
         batch.topology_role,
         skeleton_threshold_m=skeleton_threshold_m,
+        junction_threshold_multiplier=junction_threshold_multiplier,
     )
     accumulator = EncoderMetricAccumulator(
         output.semantic_logits.shape[-1],
         skeleton_threshold_m=skeleton_threshold_m,
+        junction_threshold_multiplier=junction_threshold_multiplier,
         probability_threshold=probability_threshold,
     )
     accumulator.update(batch, output, losses)

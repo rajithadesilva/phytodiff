@@ -22,7 +22,7 @@ from tomato_recon.train.common import (
     select_device,
     stage_output_dir,
     save_checkpoint,
-    selected_point_cloud_type,
+    selected_point_cloud_types,
     training_dataset_compatibility,
     write_metrics,
     write_run_metadata,
@@ -42,6 +42,10 @@ def main(argv: list[str] | None = None) -> None:
     batch = load_training_batch(cfg, device)
     backbone = create_backbone_from_config(cfg.model.encoder)
     model = PointEncoder(backbone, int(cfg.model.encoder.num_semantic_classes)).to(device)
+    skeleton_threshold_m = float(cfg.model.encoder.skeleton_threshold_m)
+    junction_threshold_multiplier = float(
+        cfg.model.encoder.junction_threshold_multiplier
+    )
     optimizer = torch.optim.AdamW(
         (parameter for parameter in model.parameters() if parameter.requires_grad),
         lr=float(cfg.trainer.learning_rate),
@@ -57,7 +61,7 @@ def main(argv: list[str] | None = None) -> None:
             expected_dataset_compatibility=training_dataset_compatibility(
                 cfg, batch.samples[0]
             ),
-            expected_pcl_type=selected_point_cloud_type(cfg),
+            expected_pcl_types=selected_point_cloud_types(cfg),
             expected_max_nodes=int(cfg.data.max_nodes),
         )
         start_epoch = int(checkpoint["epoch"]) + 1
@@ -72,6 +76,17 @@ def main(argv: list[str] | None = None) -> None:
     write_run_metadata(cfg, output_dir)
     train_loader = create_training_loader(cfg)
     validation_loader = create_validation_loader(cfg)
+    pcl_types = selected_point_cloud_types(cfg)
+    train_plant_count = (
+        len(train_loader.dataset.full_dataset)
+        if hasattr(train_loader, "dataset")
+        else 1
+    )
+    validation_plant_count = (
+        len(validation_loader.dataset.full_dataset)
+        if hasattr(validation_loader, "dataset")
+        else 1
+    )
     epoch_total = (
         start_epoch + 1
         if bool(cfg.trainer.fast_dev_run)
@@ -94,6 +109,8 @@ def main(argv: list[str] | None = None) -> None:
                 batch.node_xyz,
                 batch.node_valid,
                 batch.topology_role,
+                skeleton_threshold_m=skeleton_threshold_m,
+                junction_threshold_multiplier=junction_threshold_multiplier,
             )
             optimizer.zero_grad(set_to_none=True)
             losses["loss"].backward()
@@ -111,6 +128,8 @@ def main(argv: list[str] | None = None) -> None:
             validation_loader,
             device,
             num_classes=int(cfg.model.encoder.num_semantic_classes),
+            skeleton_threshold_m=skeleton_threshold_m,
+            junction_threshold_multiplier=junction_threshold_multiplier,
             epoch=epoch,
             epoch_total=epoch_total,
             fast_dev_run=bool(cfg.trainer.fast_dev_run),
@@ -156,7 +175,7 @@ def main(argv: list[str] | None = None) -> None:
         expected_dataset_compatibility=training_dataset_compatibility(
             cfg, batch.samples[0]
         ),
-        expected_pcl_type=selected_point_cloud_type(cfg),
+        expected_pcl_types=selected_point_cloud_types(cfg),
         expected_max_nodes=int(cfg.data.max_nodes),
     )
     metrics = best_checkpoint["metrics"]
@@ -195,6 +214,13 @@ def main(argv: list[str] | None = None) -> None:
                 if device.type == "cuda"
                 else 0.0
             ),
+            "pcl_types": list(pcl_types),
+            "training_view_sample_counts": {
+                view: train_plant_count for view in pcl_types
+            },
+            "validation_view_sample_counts": {
+                view: validation_plant_count for view in pcl_types
+            },
         }
     )
     write_metrics(output_dir, metrics)

@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw
 from tomato_recon.data.processed import (
     POINT_CLOUD_TYPES,
     ProcessedPlantDataset,
-    normalise_point_cloud_type,
+    normalise_point_cloud_types,
 )
 from tomato_recon.models.encoders.registry import ensure_backbone_available
 from tomato_recon.models.pretrained import verify_sonata_checkpoint
@@ -118,22 +118,45 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _recorded_pcl_type(values: dict[str, Any]) -> str:
-    """Read new benchmark metadata while treating older runs as full-cloud runs."""
-    return normalise_point_cloud_type(values.get("pcl_type", "full"))
+def _recorded_pcl_types(values: dict[str, Any]) -> tuple[str, ...]:
+    """Read ordered view metadata, including legacy single-view run records."""
+    if "pcl_types" in values:
+        return normalise_point_cloud_types(values["pcl_types"])
+    return normalise_point_cloud_types([values.get("pcl_type", "full")])
 
 
-def _visualizations_complete(path: Path, expected_ids: list[str]) -> bool:
+def _single_view_visualizations_complete(
+    path: Path, expected_ids: list[str], expected_view: str | None = None
+) -> bool:
     manifest_path = path / "visualization_manifest.json"
     if not manifest_path.is_file():
         return False
     manifest = _read_json(manifest_path)
+    if expected_view is not None and manifest.get("pcl_types") != [expected_view]:
+        return False
     renders = manifest.get("renders", {})
     return all(
         plant_id in renders
         and renders[plant_id].get("status") == "complete"
         and Path(renders[plant_id]["path"]).is_file()
         for plant_id in expected_ids
+    )
+
+
+def _visualizations_complete(
+    path: Path, expected_ids: list[str], pcl_types: tuple[str, ...] = ("full",)
+) -> bool:
+    if len(pcl_types) == 1:
+        return _single_view_visualizations_complete(path, expected_ids, pcl_types[0])
+    manifest_path = path / "visualization_manifest.json"
+    if not manifest_path.is_file():
+        return False
+    manifest = _read_json(manifest_path)
+    if tuple(manifest.get("pcl_types", ())) != pcl_types:
+        return False
+    return all(
+        _single_view_visualizations_complete(path / view, expected_ids, view)
+        for view in pcl_types
     )
 
 
@@ -166,6 +189,16 @@ def _chart(path: Path, title: str, values: dict[str, list[tuple[str, float]]]) -
 
 def _run_key(dataset: str, model: str) -> str:
     return f"{dataset}/{model}"
+
+
+def _pcl_types_override(pcl_types: tuple[str, ...]) -> str:
+    """Encode an ordered view array for an OmegaConf command-line override."""
+    return f"data.pcl_types=[{','.join(pcl_types)}]"
+
+
+def _pcl_types_cli(pcl_types: tuple[str, ...]) -> list[str]:
+    """Forward an ordered view array to an argparse ``nargs='+'`` option."""
+    return ["--pcl-types", *pcl_types]
 
 
 def _write_comparison(
@@ -212,6 +245,16 @@ def _write_comparison(
     )
     report = {
         "schema_version": "3.0",
+        "pcl_types": list(
+            next(
+                (
+                    _recorded_pcl_types(result)
+                    for result in results.values()
+                    if result.get("status") == "complete"
+                ),
+                ("full",),
+            )
+        ),
         "selection_split": "val",
         "test_used_for_selection": False,
         "datasets": dataset_reports,
@@ -270,6 +313,7 @@ def _write_comparison(
         "training_dataset",
         "evaluation_dataset",
         "model",
+        "pcl_types",
         "status",
         "split",
         "sample_count",
@@ -289,6 +333,7 @@ def _write_comparison(
                             "training_dataset": dataset,
                             "evaluation_dataset": dataset,
                             "model": model,
+                            "pcl_types": " ".join(_recorded_pcl_types(result)),
                             "status": result.get("status", "not_run"),
                         }
                     )
@@ -302,6 +347,7 @@ def _write_comparison(
                             "training_dataset": dataset,
                             "evaluation_dataset": dataset,
                             "model": model,
+                            "pcl_types": " ".join(_recorded_pcl_types(result)),
                             "status": "complete",
                             "split": result[split_key]["split"],
                             "sample_count": result[split_key].get("sample_count"),
@@ -323,6 +369,7 @@ def _write_comparison(
                             "training_dataset": "combined",
                             "evaluation_dataset": dataset,
                             "model": model,
+                            "pcl_types": " ".join(_recorded_pcl_types(result)),
                             "status": f"combined_model_{result.get('status', 'not_run')}",
                         }
                     )
@@ -336,6 +383,7 @@ def _write_comparison(
                             "training_dataset": "combined",
                             "evaluation_dataset": dataset,
                             "model": model,
+                            "pcl_types": " ".join(_recorded_pcl_types(result)),
                             "status": "complete",
                             "split": result[split_key]["split"],
                             "sample_count": result[split_key].get("sample_count"),
@@ -501,10 +549,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("outputs/stage1_benchmark"))
     parser.add_argument("--max-epochs", type=int, default=50)
     parser.add_argument(
-        "--pcl-type",
+        "--pcl-types",
+        nargs="+",
         choices=POINT_CLOUD_TYPES,
-        default="full",
-        help="Point clouds used for training and evaluation (default: full)",
+        default=["full"],
+        help="Ordered point-cloud views used for training and evaluation",
     )
     parser.add_argument(
         "--datasets", nargs="+", choices=DATASETS, default=list(DATASETS)
@@ -513,6 +562,7 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--allow-cpu", action="store_true", help="Testing only")
     args = parser.parse_args()
+    pcl_types = normalise_point_cloud_types(args.pcl_types)
     datasets = tuple(dict.fromkeys(args.datasets))
     models = tuple(dict.fromkeys(args.models))
     args.output.mkdir(parents=True, exist_ok=True)
@@ -563,10 +613,11 @@ def main() -> None:
         complete_path = model_output / "run_complete.json"
         if complete_path.is_file():
             result = _read_json(complete_path)
-            if _recorded_pcl_type(result) != args.pcl_type:
+            if _recorded_pcl_types(result) != pcl_types:
                 raise ValueError(
-                    f"{model_output} contains a {_recorded_pcl_type(result)!r} point-cloud "
-                    f"run; choose a separate --output for {args.pcl_type!r}"
+                    f"{model_output} contains point-cloud views "
+                    f"{_recorded_pcl_types(result)!r}; choose a separate --output for "
+                    f"{pcl_types!r}"
                 )
             results[key] = result
             progress.emit(
@@ -585,10 +636,11 @@ def main() -> None:
             checkpoint = model_output / "best.ckpt"
             if args.resume and training_marker.is_file():
                 marker = _read_json(training_marker)
-                if _recorded_pcl_type(marker) != args.pcl_type:
+                if _recorded_pcl_types(marker) != pcl_types:
                     raise ValueError(
-                        f"{model_output} contains a {_recorded_pcl_type(marker)!r} "
-                        f"point-cloud run; choose a separate --output for {args.pcl_type!r}"
+                        f"{model_output} contains point-cloud views "
+                        f"{_recorded_pcl_types(marker)!r}; choose a separate --output for "
+                        f"{pcl_types!r}"
                     )
             if not (args.resume and training_marker.is_file() and checkpoint.is_file()):
                 progress.emit(
@@ -608,7 +660,7 @@ def main() -> None:
                     f"configs/encoder/{model}.yaml",
                     f"data.processed_root={args.processed_root}",
                     f"data.dataset={dataset}",
-                    f"data.pcl_type={args.pcl_type}",
+                    _pcl_types_override(pcl_types),
                     f"output.dir={model_output}",
                     f"trainer.max_epochs={args.max_epochs}",
                     "trainer.batch_size=1",
@@ -640,7 +692,7 @@ def main() -> None:
                         {
                             "status": "complete",
                             "checkpoint": str(checkpoint),
-                            "pcl_type": args.pcl_type,
+                            "pcl_types": list(pcl_types),
                         },
                         indent=2,
                     )
@@ -695,7 +747,9 @@ def main() -> None:
             visual_output = model_output / "test_visualizations"
             if not (
                 args.resume
-                and _visualizations_complete(visual_output, expected_test_ids[dataset])
+                and _visualizations_complete(
+                    visual_output, expected_test_ids[dataset], pcl_types
+                )
             ):
                 progress.emit(
                     run_index,
@@ -703,7 +757,8 @@ def main() -> None:
                     model,
                     "visualize",
                     0.95,
-                    f"visualize test plant 0/{len(expected_test_ids[dataset])}",
+                    f"visualize test view sample 0/"
+                    f"{len(expected_test_ids[dataset]) * len(pcl_types)}",
                 )
 
                 def visual_event(event: dict[str, Any]) -> None:
@@ -736,6 +791,7 @@ def main() -> None:
                         dataset,
                         "--count",
                         "0",
+                        *_pcl_types_cli(pcl_types),
                         "--output",
                         str(visual_output),
                         "--device",
@@ -743,7 +799,9 @@ def main() -> None:
                     ],
                     visual_event,
                 )
-            if not _visualizations_complete(visual_output, expected_test_ids[dataset]):
+            if not _visualizations_complete(
+                visual_output, expected_test_ids[dataset], pcl_types
+            ):
                 raise RuntimeError("test visualization manifest is incomplete")
 
             training = _read_json(model_output / "metrics.json")
@@ -751,7 +809,7 @@ def main() -> None:
                 "status": "complete",
                 "dataset": dataset,
                 "model": model,
-                "pcl_type": args.pcl_type,
+                "pcl_types": list(pcl_types),
                 "checkpoint": str(checkpoint),
                 "training": training,
                 "validation": _read_json(validation_path),
@@ -809,7 +867,14 @@ def main() -> None:
         evaluation_output = args.output / "combined" / model / "by_dataset" / dataset
         complete_path = evaluation_output / "run_complete.json"
         if complete_path.is_file():
-            combined_evaluations[key] = _read_json(complete_path)
+            existing_evaluation = _read_json(complete_path)
+            if _recorded_pcl_types(existing_evaluation) != pcl_types:
+                raise ValueError(
+                    f"{evaluation_output} contains point-cloud views "
+                    f"{_recorded_pcl_types(existing_evaluation)!r}; choose a separate "
+                    f"--output for {pcl_types!r}"
+                )
+            combined_evaluations[key] = existing_evaluation
             progress.emit(
                 cross_index,
                 f"combined->{dataset}",
@@ -868,6 +933,7 @@ def main() -> None:
                 "training_dataset": "combined",
                 "evaluation_dataset": dataset,
                 "model": model,
+                "pcl_types": list(pcl_types),
                 "checkpoint": str(checkpoint),
                 "training": combined_result.get("training", {}),
                 "validation": _read_json(validation_path),

@@ -8,10 +8,6 @@ from torch import Tensor, nn
 from tomato_recon.data.schemas import EncoderOutput, FeatureMap
 
 
-DEFAULT_SKELETON_THRESHOLD_M = 0.01
-JUNCTION_THRESHOLD_MULTIPLIER = 2.0
-
-
 class PointBackbone(nn.Module, ABC):
     output_dim: int
     global_dim: int
@@ -78,8 +74,9 @@ def encoder_losses(
     node_valid: Tensor,
     topology_role: Tensor,
     *,
+    skeleton_threshold_m: float,
+    junction_threshold_multiplier: float,
     ignore_index: int = -100,
-    skeleton_threshold_m: float = DEFAULT_SKELETON_THRESHOLD_M,
 ) -> dict[str, Tensor]:
     semantic_target = semantic.masked_fill(~point_valid, ignore_index)
     semantic_logits = output.semantic_logits
@@ -115,7 +112,7 @@ def encoder_losses(
         distances = distances.masked_fill(~junction_valid[:, None, :], float("inf"))
         junction_target = (
             distances.min(dim=-1).values
-            <= JUNCTION_THRESHOLD_MULTIPLIER * skeleton_threshold_m
+            <= junction_threshold_multiplier * skeleton_threshold_m
         )
     else:
         junction_target = torch.zeros_like(point_valid)

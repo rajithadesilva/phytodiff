@@ -21,7 +21,7 @@ from tomato_recon.train.common import (
     create_point_cloud_dataset,
     create_split_loader,
     load_checkpoint,
-    selected_point_cloud_type,
+    selected_point_cloud_types,
 )
 
 
@@ -67,7 +67,7 @@ def main() -> None:
         expected_dataset_compatibility=processed_dataset_compatibility(
             args.processed_root, dataset_selection
         ),
-        expected_pcl_type=selected_point_cloud_type(cfg),
+        expected_pcl_types=selected_point_cloud_types(cfg),
         allow_dataset_subset=True,
         expected_max_nodes=len(first.node_xyz),
     )
@@ -82,6 +82,10 @@ def main() -> None:
         create_split_loader(cfg, args.split, shuffle=False),
         device,
         num_classes=int(cfg.model.encoder.num_semantic_classes),
+        skeleton_threshold_m=float(cfg.model.encoder.skeleton_threshold_m),
+        junction_threshold_multiplier=float(
+            cfg.model.encoder.junction_threshold_multiplier
+        ),
         stage=f"encoder/{args.split}",
     )
     report = {
@@ -90,7 +94,10 @@ def main() -> None:
         "training_dataset": training_dataset,
         "dataset": dataset_selection,
         "evaluation_dataset": dataset_selection,
-        "pcl_type": selected_point_cloud_type(cfg),
+        "pcl_types": list(selected_point_cloud_types(cfg)),
+        "view_sample_counts": {
+            view: len(dataset.full_dataset) for view in selected_point_cloud_types(cfg)
+        },
         "sample_count": len(dataset),
         "checkpoint": str(args.checkpoint),
         "checkpoint_epoch": int(checkpoint.get("epoch", -1)) + 1,

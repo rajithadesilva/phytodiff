@@ -11,7 +11,10 @@ from scripts.run_stage1_benchmark import (
     DATASETS,
     MODELS,
     BenchmarkProgress,
-    _recorded_pcl_type,
+    _pcl_types_cli,
+    _pcl_types_override,
+    _recorded_pcl_types,
+    _visualizations_complete,
     _write_comparison,
 )
 from tomato_recon.evaluation.encoder import EncoderMetricAccumulator
@@ -54,7 +57,11 @@ def test_missing_sonata_checkpoint_has_preparation_hint() -> None:
 
 
 def test_overall_metric_formula() -> None:
-    accumulator = EncoderMetricAccumulator(1)
+    accumulator = EncoderMetricAccumulator(
+        1,
+        skeleton_threshold_m=0.01,
+        junction_threshold_multiplier=2.0,
+    )
     accumulator.semantic_intersection[0] = 8
     accumulator.semantic_union[0] = 10
     accumulator.skeleton_tp = 8
@@ -88,8 +95,54 @@ def test_benchmark_progress_is_monotonic_and_persisted() -> None:
 
 
 def test_benchmark_point_cloud_metadata_supports_legacy_full_runs() -> None:
-    assert _recorded_pcl_type({}) == "full"
-    assert _recorded_pcl_type({"pcl_type": "top_down"}) == "top_down"
+    assert _recorded_pcl_types({}) == ("full",)
+    assert _recorded_pcl_types({"pcl_type": "top_down"}) == ("top_down",)
+    assert _recorded_pcl_types({"pcl_types": ["side", "full"]}) == (
+        "side",
+        "full",
+    )
+
+
+def test_benchmark_forwards_ordered_view_array_to_both_command_interfaces() -> None:
+    pcl_types = ("side", "full", "top_down")
+    assert _pcl_types_override(pcl_types) == "data.pcl_types=[side,full,top_down]"
+    assert _pcl_types_cli(pcl_types) == [
+        "--pcl-types", "side", "full", "top_down",
+    ]
+
+
+def test_multiview_visualization_completion_requires_every_ordered_view(
+    tmp_path: Path,
+) -> None:
+    plant_id = "plant_000001"
+    pcl_types = ("side", "full", "top_down")
+    (tmp_path / "visualization_manifest.json").write_text(
+        json.dumps({"pcl_types": list(pcl_types)})
+    )
+    for view in pcl_types:
+        output = tmp_path / view
+        output.mkdir()
+        render = output / f"{plant_id}.png"
+        render.write_bytes(b"image")
+        (output / "visualization_manifest.json").write_text(
+            json.dumps(
+                {
+                    "pcl_types": [view],
+                    "renders": {
+                        plant_id: {
+                            "path": str(render),
+                            "status": "complete",
+                        }
+                    },
+                }
+            )
+        )
+    assert _visualizations_complete(tmp_path, [plant_id], pcl_types)
+    assert not _visualizations_complete(
+        tmp_path, [plant_id], ("full", "side", "top_down")
+    )
+    (tmp_path / "side" / f"{plant_id}.png").unlink()
+    assert not _visualizations_complete(tmp_path, [plant_id], pcl_types)
 
 
 def test_comparison_outputs_rank_by_validation_and_link_visualizations() -> None:

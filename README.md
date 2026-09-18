@@ -109,16 +109,19 @@ maps source `0 -> 1` and `1 -> 0` for that scan before producing semantic and
 instance targets; leaf IDs and the raw file are preserved. This correction is
 recorded in `source_label_correction` metadata and the preprocessing contract.
 
-#### Top-down partial point clouds
+#### Fixed-view partial point clouds
 
-Every preparation command also writes `plant_<number>/top_down.npz` alongside the
-full `sample.npz`. To add these clouds to an existing dataset without reading the
-raw source scans, run from the repository root:
+Every preparation command writes `plant_<number>/top_down.npz` and
+`plant_<number>/side.npz` alongside the full `sample.npz`. The side sensor is at
++Y and looks along −Y onto X–Z. To add either view to an existing dataset without
+reading the raw source scans, run from the repository root:
 
 ```bash
 make generate-top-down
+make generate-side
 # Optional: change geometric occlusion strength.
 make generate-top-down TOP_DOWN_OCCLUSION_RADIUS_M=0.002 TOP_DOWN_DEPTH_TOLERANCE_M=0.001
+make generate-side SIDE_OCCLUSION_RADIUS_M=0.002 SIDE_DEPTH_TOLERANCE_M=0.001
 ```
 
 These targets run in the existing Docker Compose `preprocess` container. No host
@@ -131,16 +134,20 @@ docker compose -f docker/docker-compose.yml run --rm \
   -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 preprocess \
   python scripts/generate_top_down.py data/dataset \
   --occlusion-radius-m 0.001 --depth-tolerance-m 0.001
+
+docker compose -f docker/docker-compose.yml run --rm \
+  -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 preprocess \
+  python scripts/generate_side.py data/dataset \
+  --occlusion-radius-m 0.001 --depth-tolerance-m 0.001
 ```
 
-The view uses parallel downward rays along −Z in the canonical metres/Z-up frame.
-Each valid source point contributes a circular XY footprint: a point is hidden
-when another point within `occlusion_radius_m` is higher by more than
-`depth_tolerance_m`. Increasing the radius increases occlusion; zero radius keeps
-all valid points. Both values must be finite and non-negative and default to
-0.001 metres. This is a sampled-surface approximation, so retained counts depend
-on plant geometry and point density. No perspective, noise, or fixed-count
-resampling is applied.
+Top-down uses parallel rays along −Z with XY footprints. Side uses parallel rays
+along −Y with XZ footprints; a point is hidden when a nearby point has greater Y
+by more than `depth_tolerance_m`. Increasing either view's radius increases
+occlusion; zero radius keeps all valid points. Both values must be finite and
+non-negative and default to 0.001 metres. This is a sampled-surface approximation,
+so retained counts depend on plant geometry and density. No perspective, noise,
+or fixed-count resampling is applied.
 
 Override these settings during any source conversion using the existing dot-list
 syntax, for example:
@@ -148,24 +155,24 @@ syntax, for example:
 ```bash
 docker compose -f docker/docker-compose.yml run --rm preprocess \
   python scripts/prepare_pheno4d.py --config configs/data/pheno4d_tomato.yaml \
-  top_down.occlusion_radius_m=0.002 top_down.depth_tolerance_m=0.001
+  top_down.occlusion_radius_m=0.002 side.occlusion_radius_m=0.002
 ```
 
-Set `top_down.enabled=false` to disable automatic generation for that invocation;
-existing partial files are retained. Top-down settings have their own generation
-contract, so changing them regenerates partial files without rebuilding unchanged
-full clouds or changing training compatibility. Conversion reruns also repair
-missing or stale partial files when the full instance is otherwise skipped.
+Set `top_down.enabled=false` or `side.enabled=false` to disable that automatic
+artifact for an invocation; existing partial files are retained. Each view has an
+independent generation contract, so changing its settings regenerates only that
+partial file without rebuilding the full cloud or changing training compatibility.
+Conversion reruns repair missing, corrupt, or stale partial files even when the
+full instance is otherwise skipped.
 
 Each partial NPZ stores `xyz`, `rgb`, `normals`, `semantic`, `instance`, and
 `point_valid` in source-row order, plus `source_point_indices` mapping to rows in
 `sample.npz`. `metadata_json` preserves coordinate/provenance metadata and subsets
-`point_to_original_index` when available. Its `top_down` section records the view,
-settings, algorithm version, source checksum, and references to the full sample's
-graph and parameter targets; target geometry stays in the existing files.
-The manifest's per-instance `top_down` entry records the artifact path/checksum,
-source checksum, settings, counts, and fraction of valid source points retained.
-Training continues to load the full samples.
+`point_to_original_index` when available. Its `top_down` or `side` section records
+the view direction, projection, settings, algorithm version, source checksum, and
+references to the full sample's graph and parameter targets; target geometry stays
+in the existing files. The matching per-instance manifest entry records the
+artifact path/checksum, source checksum, settings, counts, and retained fraction.
 
 Matching artifacts are skipped. Missing, corrupt, or stale artifacts are replaced
 atomically, and the standalone command reports per-instance progress and a JSON
@@ -196,20 +203,19 @@ docker compose -f docker/docker-compose.yml run --rm preprocess \
   python -c "import json, pathlib; m=json.load(open('data/dataset/manifest.json')); expected=sum(x['status']=='complete' for x in m['instances']); actual=len(list(pathlib.Path('outputs/dataset_preview').glob('plant_*.png'))); print({'expected': expected, 'actual': actual}); assert actual == expected"
 ```
 
-Expected: one six-panel PNG per completed point-cloud instance. With all three default sources this is 163 images. The top row keeps the front, side, and top views with cached target edges in red. Each viewport is framed using labelled plant points and skeleton nodes so background surfaces do not hide small plants. Pheno4D has no RGB, so its points use the canonical semantic-class palette.
+Expected: one nine-panel PNG per completed point-cloud instance. With all three default sources this is 163 images. The top row keeps the front, side, and top views with cached target edges in red. Each viewport is framed using labelled plant points and skeleton nodes so background surfaces do not hide small plants. Pheno4D has no RGB, so its points use the canonical semantic-class palette.
 
-The bottom row compares the full cloud, the saved top-down partial cloud, and an
-occlusion overlay (green retained points, grey hidden points). All three share the
-same mildly perspective camera and scale, viewed from the side at 15 degrees above
-horizontal. Blue arrows show the downward sensor direction. Skeletons appear only
-in the top row so they do not obscure the missing surfaces in the comparison.
+The second row compares full, top-down, and top-down occlusion. The third row does
+the same for side. Each row shares a mildly offset perspective camera and scale.
+Blue arrows show the corresponding −Z or −Y sensor direction. Skeletons appear
+only in the top row so they do not obscure missing surfaces in the comparisons.
 Counts show actual valid/retained points before display subsampling; the header
 includes the occlusion settings used to generate the saved cloud.
 
 Use `--azimuth-deg 35 --elevation-deg 15` to adjust the comparison camera. These
 options change only the visualization, not the sensor or saved clouds. Missing
-top-down files show an unavailable message; stale files must be regenerated using
-`scripts/generate_top_down.py` before visualizing them.
+derived files show an unavailable message; stale files must be regenerated with
+`make generate-top-down` or `make generate-side` before visualizing them.
 
 ### 5. Train Stage 1: point encoder
 
@@ -222,22 +228,23 @@ Train the default encoder on every training instance from all three sources:
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_encoder --config-name encoder \
-  data.dataset=combined data.pcl_type=full output.dir=outputs/encoder/combined
+  data.dataset=combined data.pcl_types=[full] output.dir=outputs/encoder/combined
 python -c "import torch; c=torch.load('outputs/encoder/combined/best.ckpt', map_location='cpu', weights_only=False); print(c['stage'], c['dataset_compatibility'], c['metrics'])"
 ```
 
-`data.pcl_type` controls the input for every encoder backend:
+`data.pcl_types` is the only view-selection interface for every encoder and later
+training stage. It is a non-empty ordered array containing unique entries from
+`full`, `top_down`, and `side`:
 
-- `full` uses each `sample.npz` once (the default).
-- `top_down` uses its `top_down.npz` once.
-- `both` presents the full and top-down forms as two examples with the same
-  reconstruction target, doubling the examples in each split.
+- `[full]` uses each `sample.npz` once (the default).
+- `[side]` uses each `side.npz` once.
+- `[full,top_down,side]` presents three examples per plant in that order, with
+  every derived view sharing the full reconstruction target.
 
-Training, validation, and test metrics use the selected mode consistently. Top-down
-and both modes require current top-down artifacts; run `make generate-top-down` if
-the loader reports a missing or stale artifact. Use a separate output directory for
-each mode. The shared loader applies this setting to PointNeXt, Sonata PTv3, and
-KPConvX.
+Training, validation, and test metrics aggregate every selected view and reports
+record the ordered array plus per-view sample counts. Derived views require current
+artifacts. Use a separate output directory for each selection. The shared loader
+applies the array to PointNeXt, Sonata PTv3, KPConvX, and downstream stages.
 
 Set `data.dataset` to a source ID to train on only that source while preserving its
 train/validation/test split. Always use a separate output directory so one run cannot
@@ -276,10 +283,8 @@ and Pheno4D, adding nine evaluation-only runs without retraining.
 ```bash
 make stage1-benchmark
 make stage1-benchmark STAGE1_BENCHMARK_RESUME=--resume
-make stage1-benchmark STAGE1_TRAIN_PCL_TYPE=top_down \
-  STAGE1_BENCHMARK_OUTPUT=outputs/stage1_benchmark_top_down
-make stage1-benchmark STAGE1_TRAIN_PCL_TYPE=both \
-  STAGE1_BENCHMARK_OUTPUT=outputs/stage1_benchmark_both
+make stage1-benchmark STAGE1_TRAIN_PCL_TYPES="full top_down side" \
+  STAGE1_BENCHMARK_OUTPUT=outputs/stage1_benchmark_all_views
 ```
 
 Completed `run_complete.json` entries are always skipped. Therefore, rerunning the first
@@ -302,22 +307,23 @@ To render the combined KPConvX benchmark test set again:
 
 ```bash
 make visualize-stage1-test
-# Feed the saved top-down partial clouds to the same encoder checkpoint:
-make visualize-stage1-test STAGE1_PCL_TYPE=top_down
+# Run each requested view and write one subdirectory per view:
+make visualize-stage1-test STAGE1_PCL_TYPES="full top_down side"
 ```
 
 Expected: six-panel prediction/target previews and test metrics in
-`outputs/stage1_benchmark/combined/kpconvx/test_visualizations` for `STAGE1_PCL_TYPE=full`
-(the default), or `test_visualizations_top_down` for `STAGE1_PCL_TYPE=top_down`.
-Both commands run in Docker; `STAGE1_VIS_OUTPUT` can override the output directory.
-The underlying script accepts `--pcl-type full|top_down`.
+`outputs/stage1_benchmark/combined/kpconvx/test_visualizations` for the default
+single `[full]` view. A single derived view keeps the existing suffixed directory
+behavior. Multiple views write `full/`, `top_down/`, and `side/` subdirectories
+plus root metrics and a summary manifest. Both commands run in Docker;
+`STAGE1_VIS_OUTPUT` can override the output directory. The underlying script accepts
+`--pcl-types full top_down side`.
 
-The selected cloud is used for encoder inference, metrics, and all six panels.
-Top-down input retains the labels of its saved points and uses the full plant's
-ground-truth skeleton; point metrics cover only the retained input points. The
-checkpoint is evaluated as-is. PNG headers, `metrics.json`, and
-`visualization_manifest.json` identify the PCL type. Missing or stale partial
-clouds produce an error; run `make generate-top-down` to create or refresh them.
+Each selected cloud alone drives its encoder inference, metrics, and all six panels.
+Derived input retains the labels of its saved points and uses the full plant's
+ground-truth skeleton; point metrics cover only retained input points. The checkpoint
+is evaluated as-is. PNG headers, metrics, and manifests identify each view. Missing
+or stale partial clouds produce an error; regenerate the corresponding artifacts.
 Do not use these test results to tune training settings or thresholds.
 
 ### 6. Cache encoder features or predictions
@@ -425,12 +431,16 @@ Prerequisite: Stage 5 checkpoint and a processed `.npz` (or isolated TomatoWUR-s
 ```bash
 python -m tomato_recon.infer --config-name infer \
   input.path=data/dataset/plant_000001/sample.npz \
+  data.pcl_types=[full,top_down,side] \
   model.pipeline_checkpoint=outputs/joint/best.ckpt \
   inference.num_diffusion_samples=4 output.dir=outputs/inference/plant_000001
-test -f outputs/inference/plant_000001/plant_graph.json && test -f outputs/inference/plant_000001/plant.usd
+test -f outputs/inference/plant_000001/inference_manifest.json
 ```
 
-Expected: the complete output contract described below, with no ground-truth node count used during inference.
+One selected view writes the existing output contract directly. Multiple views write
+one subdirectory per view and a root `inference_manifest.json`. A side run consumes
+only `side.npz` points while keeping the full target contract. Raw CSV/PLY input
+requires `data.pcl_types=[full]`. No ground-truth node count is used during inference.
 
 ### 14. Validate USD statically and optionally in Isaac Sim
 

@@ -11,6 +11,8 @@ model:
     output_dim: 96
     global_dim: 128
     num_semantic_classes: 5
+    skeleton_threshold_m: 0.01
+    junction_threshold_multiplier: 2.0
     pretrained_checkpoint: null
     checkpoint: outputs/stage1_benchmark/combined/kpconvx/best.ckpt
     grid_size: 0.005

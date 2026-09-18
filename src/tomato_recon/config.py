@@ -77,16 +77,24 @@ def load_config(
 def validate_config(cfg: DictConfig, stage: str | None = None) -> None:
     from tomato_recon.data.processed import (
         normalise_dataset_selection,
-        normalise_point_cloud_type,
+        normalise_point_cloud_types,
     )
 
     cfg.data.dataset = normalise_dataset_selection(cfg.data.get("dataset", "combined"))
-    cfg.data.pcl_type = normalise_point_cloud_type(cfg.data.get("pcl_type", "full"))
+    if "pcl_type" in cfg.data:
+        raise ValueError("data.pcl_type is unsupported; configure the data.pcl_types array")
+    cfg.data.pcl_types = list(
+        normalise_point_cloud_types(cfg.data.get("pcl_types", ["full"]))
+    )
     if int(cfg.data.max_nodes) <= 1:
         raise ValueError("data.max_nodes must be greater than one")
     diffusion_k = int(cfg.model.diffusion.max_nodes)
     if diffusion_k != int(cfg.data.max_nodes):
         raise ValueError("data.max_nodes and model.diffusion.max_nodes must match")
+    if float(cfg.model.encoder.skeleton_threshold_m) <= 0:
+        raise ValueError("model.encoder.skeleton_threshold_m must be positive")
+    if float(cfg.model.encoder.junction_threshold_multiplier) <= 0:
+        raise ValueError("model.encoder.junction_threshold_multiplier must be positive")
     if str(cfg.export.up_axis) != "Z" or float(cfg.export.meters_per_unit) != 1.0:
         raise ValueError("USD export currently supports only Z-up and meters_per_unit=1.0")
     if bool(cfg.fruit.enabled) and not Path(str(cfg.fruit.pseudo_labels_dir)).is_dir():

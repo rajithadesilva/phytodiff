@@ -38,6 +38,7 @@ from tomato_recon.data.schemas import (
     TopologyRole,
     Visibility,
 )
+from tomato_recon.data.side import SideSettings, ensure_side
 from tomato_recon.data.top_down import TopDownSettings, ensure_top_down
 
 
@@ -271,11 +272,14 @@ def convert_complete_records(
     """Write complete source records into the shared flat plant-instance dataset."""
     identity = processed_dataset_identity(cfg)
     top_down_settings = TopDownSettings.from_config(cfg)
+    side_settings = SideSettings.from_config(cfg)
     output_root = resolve_processed_dataset_root(cfg)
     cfg_plain = OmegaConf.to_container(cfg, resolve=True)
     if not isinstance(cfg_plain, dict):
         raise TypeError("preprocessing configuration must be a mapping")
-    hash_config = {key: value for key, value in cfg_plain.items() if key != "top_down"}
+    hash_config = {
+        key: value for key, value in cfg_plain.items() if key not in {"top_down", "side"}
+    }
     preprocessing_hash = canonical_hash(hash_config)
     records = sorted(records, key=lambda item: (item.plant_id, item.instance_id))
     source_ids = [record.instance_id for record in records]
@@ -388,11 +392,18 @@ def convert_complete_records(
         )
         if unchanged:
             top_down_action = ensure_top_down(output_root, entry, top_down_settings)
-            if top_down_action == "generated":
+            side_action = ensure_side(output_root, entry, side_settings)
+            if "generated" in {top_down_action, side_action}:
                 write_processed_dataset_manifest(output_root, manifest)
+            if top_down_action == "generated":
                 _emit_progress(
                     progress, "top_down", **details,
                     instance_id=global_id, point_count=entry["top_down"]["point_count"],
+                )
+            if side_action == "generated":
+                _emit_progress(
+                    progress, "side", **details,
+                    instance_id=global_id, point_count=entry["side"]["point_count"],
                 )
             skipped_count += 1
             completed_entries.append(dict(entry))
@@ -458,6 +469,7 @@ def convert_complete_records(
             encoding="utf-8",
         )
         ensure_top_down(output_root, entry, top_down_settings)
+        ensure_side(output_root, entry, side_settings)
         entry.update({"cache_sha256": sha256_file(cache_path), "status": "complete", **stats})
         completed_entries.append(dict(entry))
         write_processed_dataset_manifest(output_root, manifest)

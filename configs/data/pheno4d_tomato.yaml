@@ -31,3 +31,7 @@ top_down:
   enabled: true
   occlusion_radius_m: 0.001
   depth_tolerance_m: 0.001
+side:
+  enabled: true
+  occlusion_radius_m: 0.001
+  depth_tolerance_m: 0.001

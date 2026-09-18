@@ -23,6 +23,7 @@ from tomato_recon.train.common import (
     load_checkpoint,
     load_training_batch,
     maybe_load_upstream,
+    selected_point_cloud_types,
     seed_everything,
     select_device,
     stage_output_dir,
@@ -67,6 +68,7 @@ def main(argv: list[str] | None = None) -> None:
             expected_dataset_compatibility=training_dataset_compatibility(
                 cfg, batch.samples[0]
             ),
+            expected_pcl_types=selected_point_cloud_types(cfg),
             expected_max_nodes=int(cfg.data.max_nodes)
         )
         start_epoch = int(checkpoint["epoch"]) + 1

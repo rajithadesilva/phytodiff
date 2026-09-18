@@ -24,7 +24,7 @@ from tomato_recon.data.processed import (
     PointCloudViewDataset,
     make_tiny_sample,
     normalise_dataset_selection,
-    normalise_point_cloud_type,
+    normalise_point_cloud_types,
     processed_dataset_compatibility,
 )
 
@@ -107,9 +107,9 @@ def selected_dataset(cfg: DictConfig) -> str:
     return normalise_dataset_selection(cfg.data.get("dataset", COMBINED_DATASET))
 
 
-def selected_point_cloud_type(cfg: DictConfig) -> str:
-    """Return the configured full/top-down training input selection."""
-    return normalise_point_cloud_type(cfg.data.get("pcl_type", "full"))
+def selected_point_cloud_types(cfg: DictConfig) -> tuple[str, ...]:
+    """Return the configured ordered training input views."""
+    return normalise_point_cloud_types(cfg.data.get("pcl_types", ["full"]))
 
 
 def create_point_cloud_dataset(cfg: DictConfig, split: str) -> PointCloudViewDataset:
@@ -118,7 +118,7 @@ def create_point_cloud_dataset(cfg: DictConfig, split: str) -> PointCloudViewDat
         cfg.data.processed_root,
         split=split,
         dataset=selected_dataset(cfg),
-        pcl_type=selected_point_cloud_type(cfg),
+        pcl_types=selected_point_cloud_types(cfg),
     )
 
 
@@ -333,7 +333,7 @@ def save_checkpoint(
             preprocessing_hashes[0] if len(preprocessing_hashes) == 1 else None
         ),
         "dataset_compatibility": compatibility,
-        "pcl_type": selected_point_cloud_type(cfg),
+        "pcl_types": list(selected_point_cloud_types(cfg)),
         "max_nodes": int(cfg.data.max_nodes),
         "git_commit": state["commit"],
         "git_dirty": bool(state["status"] and state["status"] != "unknown"),
@@ -351,7 +351,7 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer | None = None,
     expected_preprocessing_hash: str | None = None,
     expected_dataset_compatibility: dict[str, Any] | None = None,
-    expected_pcl_type: str | None = None,
+    expected_pcl_types: tuple[str, ...] | list[str] | None = None,
     allow_dataset_subset: bool = False,
     expected_max_nodes: int | None = None,
     strict: bool = True,
@@ -362,21 +362,30 @@ def load_checkpoint(
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     actual_hash = checkpoint.get("preprocessing_hash")
     actual_compatibility = checkpoint.get("dataset_compatibility")
-    if expected_pcl_type is not None:
-        expected_mode = normalise_point_cloud_type(expected_pcl_type)
+    if expected_pcl_types is not None:
+        expected_modes = normalise_point_cloud_types(expected_pcl_types)
         checkpoint_config = checkpoint.get("config", {})
         checkpoint_data = (
             checkpoint_config.get("data", {})
             if isinstance(checkpoint_config, dict)
             else {}
         )
-        actual_mode = normalise_point_cloud_type(
-            checkpoint.get("pcl_type", checkpoint_data.get("pcl_type", "full"))
-        )
-        if actual_mode != expected_mode:
+        stored_modes = checkpoint.get("pcl_types", checkpoint_data.get("pcl_types"))
+        if stored_modes is not None:
+            actual_modes = normalise_point_cloud_types(stored_modes)
+        else:
+            legacy_mode = checkpoint.get(
+                "pcl_type", checkpoint_data.get("pcl_type", "full")
+            )
+            if legacy_mode not in {"full", "top_down"}:
+                raise ValueError(
+                    f"checkpoint point-cloud types are invalid: {legacy_mode!r}"
+                )
+            actual_modes = (str(legacy_mode),)
+        if actual_modes != expected_modes:
             raise ValueError(
-                f"checkpoint point-cloud type mismatch: expected {expected_mode!r}, "
-                f"got {actual_mode!r}"
+                f"checkpoint point-cloud types mismatch: expected {expected_modes!r}, "
+                f"got {actual_modes!r}"
             )
     if expected_dataset_compatibility is not None:
         expected_signature = expected_dataset_compatibility.get("signature")
@@ -445,6 +454,7 @@ def maybe_load_upstream(
                 path,
                 module,
                 expected_dataset_compatibility=training_dataset_compatibility(cfg, sample),
+                expected_pcl_types=selected_point_cloud_types(cfg),
                 expected_max_nodes=int(cfg.data.max_nodes),
             )
         except ValueError:
@@ -459,7 +469,7 @@ def maybe_load_upstream(
     return None
 
 
-def write_metrics(output_dir: Path, values: dict[str, float]) -> None:
+def write_metrics(output_dir: Path, values: dict[str, Any]) -> None:
     (output_dir / "metrics.json").write_text(
         json.dumps(values, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

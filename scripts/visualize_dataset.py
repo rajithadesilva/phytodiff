@@ -28,20 +28,25 @@ SEMANTIC_COLOURS = {
 
 
 @dataclass(frozen=True)
-class TopDownView:
+class FixedView:
     source_indices: torch.Tensor
     occlusion_radius_m: float
     depth_tolerance_m: float
+    key: str
+    view_direction: tuple[float, float, float]
 
 
-def load_top_down(source_path: Path, sample) -> TopDownView | None:
-    path = source_path.with_name("top_down.npz")
+TopDownView = FixedView
+
+
+def load_fixed_view(source_path: Path, sample, key: str) -> FixedView | None:
+    path = source_path.with_name(f"{key}.npz")
     if not path.is_file():
         return None
     with np.load(path, allow_pickle=False) as cloud:
-        metadata = json.loads(cloud["metadata_json"].item())["top_down"]
+        metadata = json.loads(cloud["metadata_json"].item())[key]
         if metadata["source_cache_sha256"] != file_sha256(source_path):
-            raise ValueError(f"{path} is stale; rerun scripts/generate_top_down.py")
+            raise ValueError(f"{path} is stale; rerun scripts/generate_{key}.py")
         indices = cloud["source_point_indices"]
         if (
             indices.ndim != 1 or not np.issubdtype(indices.dtype, np.integer)
@@ -51,13 +56,26 @@ def load_top_down(source_path: Path, sample) -> TopDownView | None:
             raise ValueError(f"{path} has invalid source point indices")
         rows = torch.from_numpy(indices.astype(np.int64))
         if not torch.equal(torch.from_numpy(cloud["xyz"]), sample.xyz[rows]):
-            raise ValueError(f"{path} does not match its full cloud; regenerate top-down clouds")
+            raise ValueError(f"{path} does not match its full cloud; regenerate {key} clouds")
         if not bool(sample.point_valid[rows].all()):
             raise ValueError(f"{path} contains invalid source points")
-        return TopDownView(rows, **{
-            key: float(metadata["settings"][key])
-            for key in ("occlusion_radius_m", "depth_tolerance_m")
-        })
+        return FixedView(
+            rows,
+            **{
+                name: float(metadata["settings"][name])
+                for name in ("occlusion_radius_m", "depth_tolerance_m")
+            },
+            key=key,
+            view_direction=tuple(float(value) for value in metadata["view_direction"]),
+        )
+
+
+def load_top_down(source_path: Path, sample) -> FixedView | None:
+    return load_fixed_view(source_path, sample, "top_down")
+
+
+def load_side(source_path: Path, sample) -> FixedView | None:
+    return load_fixed_view(source_path, sample, "side")
 
 
 def _point_colours(sample) -> torch.Tensor:
@@ -89,9 +107,10 @@ def _perspective(
 
 
 def _draw_perspective_row(
-    draw: ImageDraw.ImageDraw, sample, view: TopDownView | None,
+    draw: ImageDraw.ImageDraw, sample, view: FixedView | None,
     bounds_xyz: torch.Tensor, colours: torch.Tensor,
     *, panel_size: int, top: int, azimuth_deg: float, elevation_deg: float,
+    view_label: str, view_direction: tuple[float, float, float],
 ) -> None:
     centre = (bounds_xyz.amin(dim=0) + bounds_xyz.amax(dim=0)) / 2
     radius = float(torch.linalg.vector_norm(bounds_xyz - centre, dim=1).max().clamp_min(1e-5))
@@ -129,8 +148,11 @@ def _draw_perspective_row(
             else:
                 draw.point((left + x, top + y), fill=fill)
 
-    labels = ("Full cloud | side perspective", "Top-down cloud | same camera",
-              "Occlusion | green retained, grey hidden")
+    labels = (
+        "Full cloud | side perspective",
+        f"{view_label} cloud | same camera",
+        f"{view_label} occlusion | green retained, grey hidden",
+    )
     for panel, label in enumerate(labels):
         left = panel * panel_size
         draw.rectangle((left, top, left + panel_size - 1, top + panel_size - 1),
@@ -141,7 +163,8 @@ def _draw_perspective_row(
             detail = f"{len(full_rows):,} valid points | no skeleton overlay"
         elif view is None:
             draw.text((left + 30, top + panel_size // 2),
-                      "Top-down cloud unavailable. Run generate_top_down.py.", fill=(95, 95, 95))
+                      f"{view_label} cloud unavailable. Run generate_{view_label}.py.",
+                      fill=(95, 95, 95))
             continue
         else:
             if panel == 2:
@@ -151,8 +174,9 @@ def _draw_perspective_row(
             detail = (f"{len(view.source_indices):,} points | {fraction:.1%} retained"
                       if panel == 1 else "Hidden points shown as a grey reference")
         draw.text((left + 10, top + panel_size - 24), detail, fill=(65, 65, 65))
-        # A projected world -Z arrow, independent of the viewing camera.
-        arrow_xyz = torch.stack([centre + torch.tensor([0., 0., radius * 0.2]), centre])
+        # Project the world-space sensor ray through the same perspective camera.
+        ray = torch.tensor(view_direction) * radius * 0.2
+        arrow_xyz = torch.stack([centre - ray, centre])
         arrow, _ = _perspective(arrow_xyz, centre, basis, distance)
         direction = arrow[1] - arrow[0]
         direction[1] *= -1
@@ -163,7 +187,12 @@ def _draw_perspective_row(
         draw.line((*start.tolist(), *end.tolist()), fill=(45, 85, 160), width=2)
         draw.polygon([tuple(end.tolist()), tuple((end - direction * 9 + perpendicular * 4).tolist()),
                       tuple((end - direction * 9 - perpendicular * 4).tolist())], fill=(45, 85, 160))
-        draw.text((left + panel_size - 127, top + 29), "sensor -Z", fill=(45, 85, 160))
+        sensor_axis = "-Z" if view_label == "top_down" else "-Y"
+        draw.text(
+            (left + panel_size - 127, top + 29),
+            f"sensor {sensor_axis}",
+            fill=(45, 85, 160),
+        )
 
 
 def _project(
@@ -184,7 +213,8 @@ def _project(
 
 
 def render(
-    sample, path: Path, top_down: TopDownView | None = None,
+    sample, path: Path, top_down: FixedView | None = None,
+    side: FixedView | None = None,
     *, azimuth_deg: float = 35.0, elevation_deg: float = 15.0,
 ) -> None:
     panel_size = 520
@@ -194,7 +224,9 @@ def render(
         raise ValueError("camera angles must be finite")
     if not -80 <= elevation_deg <= 80:
         raise ValueError("elevation must be between -80 and 80 degrees for a side view")
-    canvas = Image.new("RGB", (panel_size * len(PROJECTIONS), 2 * panel_size + header), "white")
+    canvas = Image.new(
+        "RGB", (panel_size * len(PROJECTIONS), 3 * panel_size + header), "white"
+    )
     draw = ImageDraw.Draw(canvas)
     source = sample.metadata.get("skeleton_source", "unknown")
     dataset = sample.metadata.get("dataset", "unknown")
@@ -277,12 +309,22 @@ def render(
     _draw_perspective_row(
         draw, sample, top_down, bounds_xyz, colours, panel_size=panel_size,
         top=header + panel_size, azimuth_deg=azimuth_deg, elevation_deg=elevation_deg,
+        view_label="top_down", view_direction=(0.0, 0.0, -1.0),
+    )
+    _draw_perspective_row(
+        draw, sample, side, bounds_xyz, colours, panel_size=panel_size,
+        top=header + 2 * panel_size, azimuth_deg=azimuth_deg, elevation_deg=elevation_deg,
+        view_label="side", view_direction=(0.0, -1.0, 0.0),
     )
     if top_down is not None:
         draw.text((760, 27),
                   f"Top-down: radius {top_down.occlusion_radius_m:g} m, "
                   f"depth tolerance {top_down.depth_tolerance_m:g} m | "
                   f"view az {azimuth_deg:g}, elev {elevation_deg:g} deg", fill=(50, 50, 50))
+    if side is not None:
+        draw.text((1130, 27),
+                  f"Side: radius {side.occlusion_radius_m:g} m, "
+                  f"depth tolerance {side.depth_tolerance_m:g} m", fill=(50, 50, 50))
     canvas.save(path)
 
 
@@ -323,6 +365,7 @@ def main() -> None:
         )
         render(sample, args.output / f"{sample.plant_id}.png",
                load_top_down(dataset.paths[index], sample),
+               load_side(dataset.paths[index], sample),
                azimuth_deg=args.azimuth_deg, elevation_deg=args.elevation_deg)
     print(f"wrote {count} canonical dataset previews to {args.output}")
 

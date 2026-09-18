@@ -23,6 +23,7 @@ from tomato_recon.data.processed import (
     save_processed_sample,
     write_processed_dataset_manifest,
 )
+from tomato_recon.data.side import SideSettings, ensure_side
 from tomato_recon.data.top_down import TopDownSettings, ensure_top_down
 
 
@@ -119,7 +120,7 @@ class DataTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not available"):
                 ProcessedPlantDataset(root, dataset="tomatopgt")
 
-    def test_point_cloud_view_dataset_selects_full_top_down_or_both(self) -> None:
+    def test_point_cloud_view_dataset_preserves_configured_view_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             sample = make_tiny_sample(max_nodes=16, num_points=96)
@@ -147,26 +148,37 @@ class DataTests(unittest.TestCase):
                 },
             )
             ensure_top_down(root, entry, TopDownSettings(occlusion_radius_m=0.02))
+            ensure_side(root, entry, SideSettings(occlusion_radius_m=0.02))
 
-            full = PointCloudViewDataset(root, split="train", dataset="fixture", pcl_type="full")
-            top_down = PointCloudViewDataset(
-                root, split="train", dataset="fixture", pcl_type="top_down"
+            full = PointCloudViewDataset(
+                root, split="train", dataset="fixture", pcl_types=["full"]
             )
-            both = PointCloudViewDataset(root, split="train", dataset="fixture", pcl_type="both")
+            top_down = PointCloudViewDataset(
+                root, split="train", dataset="fixture", pcl_types=["top_down"]
+            )
+            views = PointCloudViewDataset(
+                root,
+                split="train",
+                dataset="fixture",
+                pcl_types=["side", "full", "top_down"],
+            )
 
-            self.assertEqual((len(full), len(top_down), len(both)), (1, 1, 2))
+            self.assertEqual((len(full), len(top_down), len(views)), (1, 1, 3))
             self.assertEqual(full[0].metadata["pcl_type"], "full")
             self.assertEqual(top_down[0].metadata["pcl_type"], "top_down")
-            self.assertEqual([both[index].metadata["pcl_type"] for index in range(2)],
-                             ["full", "top_down"])
+            self.assertEqual(
+                [views[index].metadata["pcl_type"] for index in range(3)],
+                ["side", "full", "top_down"],
+            )
             self.assertLess(len(top_down[0].xyz), len(full[0].xyz))
             for field in (
                 "node_xyz", "node_valid", "parent_flow", "parent_index",
                 "organ_type", "topology_role", "visibility",
             ):
                 torch.testing.assert_close(getattr(top_down[0], field), getattr(full[0], field))
-            with self.assertRaisesRegex(ValueError, "data.pcl_type"):
-                PointCloudViewDataset(root, pcl_type="partial")
+            for invalid in ([], ["full", "full"], ["partial"], "full"):
+                with self.assertRaisesRegex(ValueError, "data.pcl_types"):
+                    PointCloudViewDataset(root, pcl_types=invalid)
 
 if __name__ == "__main__":
     unittest.main()

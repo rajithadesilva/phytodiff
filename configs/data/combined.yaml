@@ -1,5 +1,5 @@
 dataset: combined
-pcl_type: full
+pcl_types: [full]
 dataset_root: data/dataset
 processed_root: ${.dataset_root}
 split: train

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +12,9 @@ from PIL import Image, ImageDraw
 from tomato_recon.config import load_config
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import IGNORE_INDEX, OrganType, PlantSample, TopologyRole, Visibility
-from tomato_recon.data.processed import load_processed_sample
+from tomato_recon.data.processed import load_processed_sample, normalise_point_cloud_types
+from tomato_recon.data.side import load_side_sample
+from tomato_recon.data.top_down import load_top_down_sample
 from tomato_recon.export.ply import write_mesh_ply, write_point_ply
 from tomato_recon.export.usd_exporter import USDPlantExporter
 from tomato_recon.models.pipeline import PipelineResult, TomatoReconstructionPipeline
@@ -171,14 +174,36 @@ def main(argv: list[str] | None = None) -> None:
     if not cfg.input.path:
         raise ValueError("set input.path to a processed sample .npz, raw .csv, or ASCII .ply")
     input_path = Path(cfg.input.path)
-    sample = (
-        load_processed_sample(input_path)
-        if input_path.suffix.lower() == ".npz"
-        else load_unlabelled_scan(input_path, int(cfg.data.max_nodes), int(cfg.data.num_points))
-    )
-    if len(sample.node_xyz) != int(cfg.data.max_nodes):
+    pcl_types = normalise_point_cloud_types(cfg.data.pcl_types)
+    processed_input = input_path.suffix.lower() == ".npz"
+    if processed_input:
+        full_sample = load_processed_sample(input_path)
+        samples = {
+            view: (
+                replace(
+                    full_sample,
+                    metadata={**full_sample.metadata, "pcl_type": "full"},
+                )
+                if view == "full"
+                else load_top_down_sample(input_path, full_sample)
+                if view == "top_down"
+                else load_side_sample(input_path, full_sample)
+            )
+            for view in pcl_types
+        }
+    else:
+        if pcl_types != ("full",):
+            raise ValueError("raw CSV/PLY inference requires data.pcl_types=[full]")
+        full_sample = load_unlabelled_scan(
+            input_path, int(cfg.data.max_nodes), int(cfg.data.num_points)
+        )
+        samples = {"full": replace(
+            full_sample, metadata={**full_sample.metadata, "pcl_type": "full"}
+        )}
+    if len(full_sample.node_xyz) != int(cfg.data.max_nodes):
         raise ValueError(
-            f"input fixed-K={len(sample.node_xyz)} does not match configured data.max_nodes={cfg.data.max_nodes}"
+            f"input fixed-K={len(full_sample.node_xyz)} does not match configured "
+            f"data.max_nodes={cfg.data.max_nodes}"
         )
     seed_everything(int(cfg.seed), bool(cfg.trainer.deterministic))
     device = select_device(cfg)
@@ -188,17 +213,50 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint = load_checkpoint(
             checkpoint_path,
             pipeline,
-            expected_preprocessing_hash=sample.metadata.get("preprocessing_hash"),
+            expected_preprocessing_hash=full_sample.metadata.get("preprocessing_hash"),
             expected_max_nodes=int(cfg.data.max_nodes),
         )
         pipeline.checkpoint_hashes = {"pipeline": checkpoint_sha256(checkpoint_path)}
         pipeline.git_commit = str(checkpoint.get("git_commit", ""))
     elif not bool(cfg.trainer.fast_dev_run):
         raise FileNotFoundError(f"pipeline checkpoint not found: {checkpoint_path}")
-    batch = collate_plant_samples([sample]).to(device)
-    result = pipeline.reconstruct(batch)[0]
-    files = write_inference_outputs(Path(cfg.output.dir), sample, result, cfg)
-    print(json.dumps({"plant_id": sample.plant_id, "outputs": files}, indent=2))
+    output_root = Path(cfg.output.dir)
+    outputs: dict[str, dict[str, str]] = {}
+    for view in pcl_types:
+        sample = samples[view]
+        batch = collate_plant_samples([sample]).to(device)
+        result = pipeline.reconstruct(batch)[0]
+        output_dir = output_root if len(pcl_types) == 1 else output_root / view
+        outputs[view] = write_inference_outputs(output_dir, sample, result, cfg)
+    if len(pcl_types) > 1:
+        output_root.mkdir(parents=True, exist_ok=True)
+        summary = {
+            "schema_version": "1.0",
+            "plant_id": full_sample.plant_id,
+            "input": str(input_path),
+            "pcl_types": list(pcl_types),
+            "views": {
+                view: {
+                    "output": str(output_root / view),
+                    "point_count": int(samples[view].point_valid.sum()),
+                    "outputs": outputs[view],
+                }
+                for view in pcl_types
+            },
+        }
+        (output_root / "inference_manifest.json").write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    print(
+        json.dumps(
+            {
+                "plant_id": full_sample.plant_id,
+                "pcl_types": list(pcl_types),
+                "outputs": outputs[pcl_types[0]] if len(pcl_types) == 1 else outputs,
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

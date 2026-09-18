@@ -300,19 +300,28 @@ class OtherDatasetConversionTests(unittest.TestCase):
                 (1, pgt_cfg, preprocess_tomatopgt), (2, pheno_cfg, preprocess_pheno4d)
             ]:
                 partial = dataset_root / f"plant_{number:06d}" / "top_down.npz"
+                side = partial.with_name("side.npz")
                 self.assertTrue(partial.is_file())
+                self.assertTrue(side.is_file())
                 full_hash = file_sha256(partial.with_name("sample.npz"))
                 partial.unlink()
+                side.unlink()
                 backfill = convert(config)
                 self.assertEqual(backfill["skipped_instance_count"], 1)
                 self.assertTrue(partial.is_file())
+                self.assertTrue(side.is_file())
                 config.top_down = {"occlusion_radius_m": 0.0}
+                config.side = {"occlusion_radius_m": 0.0}
                 changed = convert(config)
                 self.assertEqual(changed["skipped_instance_count"], 1)
                 self.assertEqual(changed["preprocessing_hash"], backfill["preprocessing_hash"])
                 self.assertEqual(file_sha256(partial.with_name("sample.npz")), full_hash)
                 self.assertEqual(
                     changed["instances"][0]["top_down"]["point_count"],
+                    changed["instances"][0]["point_count"],
+                )
+                self.assertEqual(
+                    changed["instances"][0]["side"]["point_count"],
                     changed["instances"][0]["point_count"],
                 )
             dataset = ProcessedPlantDataset(dataset_root)

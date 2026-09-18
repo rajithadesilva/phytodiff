@@ -1,23 +1,29 @@
 from __future__ import annotations
 
+import json
 import math
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import torch
 from PIL import Image
 
-from scripts.visualize_encoder_predictions import encoder_metrics, render_encoder_prediction
+from scripts.visualize_encoder_predictions import encoder_metrics, main, render_encoder_prediction
 from scripts.visualize_encoder_predictions import _select_samples
+from tomato_recon.config import load_config
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.processed import (
     ProcessedPlantDataset, make_tiny_sample, save_processed_sample,
     write_processed_dataset_manifest,
 )
+from tomato_recon.data.side import SideSettings, ensure_side
 from tomato_recon.data.top_down import TopDownSettings, ensure_top_down, file_sha256
 from tomato_recon.models.encoders.base import PointEncoder
 from tomato_recon.models.encoders.pointnext import PointNeXtAdapter
+from tomato_recon.models.encoders.registry import create_backbone_from_config
+from tomato_recon.train.common import save_checkpoint
 
 
 class EncoderVisualizationTests(unittest.TestCase):
@@ -32,6 +38,7 @@ class EncoderVisualizationTests(unittest.TestCase):
             "instance_id": sample.plant_id, "source_plant_id": "source_plant",
             "source_instance_id": "source_instance", "split": "test", "status": "complete",
             "cache_file": "plant_000001/sample.npz",
+            "preprocessing_hash": "fixture-preprocessing-hash",
         }
         write_processed_dataset_manifest(root, {
             "schema_version": "1.0", "layout": "flat-plant-instance-v1",
@@ -47,8 +54,11 @@ class EncoderVisualizationTests(unittest.TestCase):
             full = _select_samples(dataset, 0, [], "full")[0]
             ensure_top_down(root, entry, TopDownSettings(occlusion_radius_m=0.02))
             partial = _select_samples(dataset, 0, [full.plant_id], "top_down")[0]
+            ensure_side(root, entry, SideSettings(occlusion_radius_m=0.02))
+            side = _select_samples(dataset, 0, [full.plant_id], "side")[0]
             self.assertEqual(full.metadata["pcl_type"], "full")
             self.assertEqual(partial.metadata["pcl_type"], "top_down")
+            self.assertEqual(side.metadata["pcl_type"], "side")
             self.assertLess(len(partial.xyz), len(full.xyz))
             rows = partial.metadata["source_point_indices"]
             for field in ("xyz", "rgb", "normals", "semantic", "instance", "point_valid"):
@@ -68,6 +78,7 @@ class EncoderVisualizationTests(unittest.TestCase):
                 output = model(batch.xyz, torch.cat([batch.rgb, batch.normals], dim=-1),
                                batch.point_valid)
                 metrics = encoder_metrics(partial, output, skeleton_threshold_m=0.01,
+                                          junction_threshold_multiplier=2.0,
                                           probability_threshold=0.5)
             self.assertEqual(output.semantic_logits.shape[1], len(partial.xyz))
             self.assertTrue(all(math.isfinite(value) for value in metrics.values()))
@@ -80,7 +91,7 @@ class EncoderVisualizationTests(unittest.TestCase):
             dataset, sample, entry = self._dataset(root)
             with self.assertRaisesRegex(FileNotFoundError, "make generate-top-down"):
                 _select_samples(dataset, 0, [], "top_down")
-            with self.assertRaisesRegex(ValueError, "pcl_type"):
+            with self.assertRaisesRegex(ValueError, "pcl_types"):
                 _select_samples(dataset, 0, [], "invalid")
             with self.assertRaisesRegex(ValueError, "plant IDs not found"):
                 _select_samples(dataset, 0, ["plant_000002"], "full")
@@ -107,6 +118,7 @@ class EncoderVisualizationTests(unittest.TestCase):
                 sample,
                 output,
                 skeleton_threshold_m=0.01,
+                junction_threshold_multiplier=2.0,
                 probability_threshold=0.5,
             )
 
@@ -134,6 +146,73 @@ class EncoderVisualizationTests(unittest.TestCase):
             self.assertTrue(output_path.is_file())
             with Image.open(output_path) as image:
                 self.assertEqual(image.size, (6 * 390, 70 + 390 + 70))
+
+    def test_multiview_command_fans_out_outputs_in_array_order(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset, _, entry = self._dataset(root)
+            ensure_top_down(root, entry, TopDownSettings(occlusion_radius_m=0.02))
+            ensure_side(root, entry, SideSettings(occlusion_radius_m=0.02))
+            cfg, _ = load_config(
+                "encoder",
+                [
+                    "--config",
+                    "configs/smoke/all.yaml",
+                    f"data.processed_root={root}",
+                    "data.dataset=fixture",
+                    "data.pcl_types=[full]",
+                ],
+            )
+            model = PointEncoder(
+                create_backbone_from_config(cfg.model.encoder),
+                int(cfg.model.encoder.num_semantic_classes),
+            )
+            checkpoint = root / "encoder.ckpt"
+            save_checkpoint(
+                checkpoint,
+                stage="encoder",
+                model=model,
+                optimizer=torch.optim.Adam(model.parameters()),
+                cfg=cfg,
+                sample=dataset[0],
+                epoch=0,
+                metrics={},
+            )
+            output = root / "visualizations"
+            argv = [
+                "visualize_encoder_predictions.py",
+                "--checkpoint",
+                str(checkpoint),
+                "--processed-root",
+                str(root),
+                "--split",
+                "test",
+                "--dataset",
+                "fixture",
+                "--count",
+                "1",
+                "--pcl-types",
+                "side",
+                "full",
+                "top_down",
+                "--output",
+                str(output),
+                "--device",
+                "cpu",
+                "--max-render-points",
+                "64",
+            ]
+            with patch("sys.argv", argv):
+                main()
+            root_metrics = json.loads((output / "metrics.json").read_text())
+            self.assertEqual(root_metrics["pcl_types"], ["side", "full", "top_down"])
+            self.assertEqual(root_metrics["view_sample_counts"], {
+                "side": 1, "full": 1, "top_down": 1,
+            })
+            for view in root_metrics["pcl_types"]:
+                self.assertTrue((output / view / "plant_000001.png").is_file())
+                report = json.loads((output / view / "metrics.json").read_text())
+                self.assertEqual(report["pcl_types"], [view])
 
 
 if __name__ == "__main__":

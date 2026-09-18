@@ -21,18 +21,25 @@ class ConfigurationTests(unittest.TestCase):
         cfg, _ = load_config("encoder")
         self.assertEqual(cfg.model.encoder.name, "kpconvx")
         self.assertFalse(cfg.model.encoder.pretrained)
+        self.assertEqual(cfg.model.encoder.skeleton_threshold_m, 0.01)
+        self.assertEqual(cfg.model.encoder.junction_threshold_multiplier, 2.0)
         self.assertEqual(
             cfg.model.encoder.checkpoint,
             "outputs/stage1_benchmark/combined/kpconvx/best.ckpt",
         )
         self.assertEqual(cfg.data.dataset, "combined")
-        self.assertEqual(cfg.data.pcl_type, "full")
+        self.assertEqual(list(cfg.data.pcl_types), ["full"])
 
-        for pcl_type in ("top_down", "both"):
-            selected, _ = load_config("encoder", [f"data.pcl_type={pcl_type}"])
-            self.assertEqual(selected.data.pcl_type, pcl_type)
+        for pcl_types in ("[top_down]", "[side]", "[full,top_down,side]"):
+            selected, _ = load_config("encoder", [f"data.pcl_types={pcl_types}"])
+            self.assertEqual(
+                list(selected.data.pcl_types), pcl_types.strip("[]").split(",")
+            )
+        for invalid in ("[]", "[full,full]", "[partial]", "full"):
+            with self.assertRaisesRegex(ValueError, "data.pcl_types"):
+                load_config("encoder", [f"data.pcl_types={invalid}"])
         with self.assertRaisesRegex(ValueError, "data.pcl_type"):
-            load_config("encoder", ["data.pcl_type=partial"])
+            load_config("encoder", ["data.pcl_type=top_down"])
 
         diffusion_cfg, _ = load_config("diffusion")
         self.assertEqual(diffusion_cfg.model.encoder.name, "kpconvx")
@@ -84,13 +91,28 @@ class ConfigurationTests(unittest.TestCase):
             checkpoint = torch.load(path, map_location="cpu", weights_only=False)
             self.assertIn("dataset_compatibility", checkpoint)
             self.assertTrue(checkpoint["dataset_compatibility"]["signature"])
-            self.assertEqual(checkpoint["pcl_type"], "full")
+            self.assertNotIn("pcl_type", checkpoint)
+            self.assertEqual(checkpoint["pcl_types"], ["full"])
             with self.assertRaisesRegex(ValueError, "preprocessing hash mismatch"):
                 load_checkpoint(path, model, expected_preprocessing_hash="different")
             with self.assertRaisesRegex(ValueError, "max_nodes mismatch"):
                 load_checkpoint(path, model, expected_max_nodes=17)
-            with self.assertRaisesRegex(ValueError, "point-cloud type mismatch"):
-                load_checkpoint(path, model, expected_pcl_type="top_down")
+            with self.assertRaisesRegex(ValueError, "point-cloud types mismatch"):
+                load_checkpoint(path, model, expected_pcl_types=["top_down"])
+            with self.assertRaisesRegex(ValueError, "point-cloud types mismatch"):
+                load_checkpoint(path, model, expected_pcl_types=["side", "full"])
+            legacy = dict(checkpoint)
+            legacy.pop("pcl_types")
+            legacy["config"] = {
+                **legacy["config"],
+                "data": {**legacy["config"]["data"], "pcl_type": "top_down"},
+            }
+            legacy["config"]["data"].pop("pcl_types", None)
+            torch.save(legacy, path)
+            load_checkpoint(path, model, expected_pcl_types=["top_down"])
+            with self.assertRaisesRegex(ValueError, "point-cloud types mismatch"):
+                load_checkpoint(path, model, expected_pcl_types=["full"])
+            checkpoint = legacy
             expected = checkpoint["dataset_compatibility"]
             checkpoint["dataset_compatibility"] = {
                 **expected,

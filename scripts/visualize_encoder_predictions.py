@@ -18,17 +18,16 @@ from PIL import Image, ImageDraw
 from tomato_recon.data.collate import collate_plant_samples
 from tomato_recon.data.schemas import IGNORE_INDEX, EncoderOutput, PlantSample, TopologyRole
 from tomato_recon.data.processed import (
+    POINT_CLOUD_TYPES,
     ProcessedPlantDataset,
     normalise_dataset_selection,
+    normalise_point_cloud_types,
     processed_dataset_compatibility,
 )
+from tomato_recon.data.side import load_side_sample
 from tomato_recon.data.top_down import load_top_down_sample
 from tomato_recon.evaluation.encoder import EncoderMetricAccumulator, encoder_metrics_for_sample
-from tomato_recon.models.encoders.base import (
-    DEFAULT_SKELETON_THRESHOLD_M,
-    PointEncoder,
-    encoder_losses,
-)
+from tomato_recon.models.encoders.base import PointEncoder, encoder_losses
 from tomato_recon.models.encoders.registry import create_backbone_from_config
 from tomato_recon.train.common import checkpoint_sha256, load_checkpoint
 
@@ -123,6 +122,7 @@ def encoder_metrics(
     output: EncoderOutput,
     *,
     skeleton_threshold_m: float,
+    junction_threshold_multiplier: float,
     probability_threshold: float,
 ) -> dict[str, float]:
     """Compute canonical Stage 1 metrics for one unpadded plant."""
@@ -130,6 +130,7 @@ def encoder_metrics(
         sample,
         output,
         skeleton_threshold_m=skeleton_threshold_m,
+        junction_threshold_multiplier=junction_threshold_multiplier,
         probability_threshold=probability_threshold,
     )
 
@@ -321,8 +322,7 @@ def _select_samples(
     dataset: ProcessedPlantDataset, count: int, plant_ids: list[str],
     pcl_type: str = "full",
 ) -> list[PlantSample]:
-    if pcl_type not in {"full", "top_down"}:
-        raise ValueError("pcl_type must be 'full' or 'top_down'")
+    pcl_type = normalise_point_cloud_types([pcl_type])[0]
     if plant_ids:
         requested = set(plant_ids)
         selected = [index for index, entry in enumerate(dataset.instances)
@@ -339,113 +339,51 @@ def _select_samples(
         sample = dataset[index]
         if pcl_type == "top_down":
             sample = load_top_down_sample(dataset.paths[index], sample)
+        elif pcl_type == "side":
+            sample = load_side_sample(dataset.paths[index], sample)
         else:
             sample = replace(sample, metadata={**sample.metadata, "pcl_type": "full"})
         samples.append(sample)
     return samples
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--checkpoint",
-        type=Path,
-        default=Path("outputs/stage1_benchmark/combined/kpconvx/best.ckpt"),
-    )
-    parser.add_argument(
-        "--processed-root",
-        type=Path,
-        help="Processed cache root; defaults to data.processed_root stored in the checkpoint",
-    )
-    parser.add_argument(
-        "--split",
-        default="test",
-        help="Held-out split to visualize (default: test)",
-    )
-    parser.add_argument(
-        "--dataset",
-        help="Source dataset ID, or 'combined'; defaults to the checkpoint selection",
-    )
-    parser.add_argument("--count", type=int, default=3, help="Number of plants; use 0 for all")
-    parser.add_argument(
-        "--pcl-type", choices=("full", "top_down"), default="full",
-        help="Point cloud used for encoder inference, metrics, and rendering (default: full)",
-    )
-    parser.add_argument(
-        "--plant-id", action="append", default=[], help="Render this plant ID (repeatable)"
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        help="Output directory; top_down defaults to test_visualizations_top_down",
-    )
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
-    parser.add_argument("--probability-threshold", type=float, default=0.5)
-    parser.add_argument(
-        "--skeleton-threshold-m",
-        type=float,
-        default=DEFAULT_SKELETON_THRESHOLD_M,
-    )
-    parser.add_argument("--max-render-points", type=int, default=50_000)
-    args = parser.parse_args()
-    if args.output is None:
-        suffix = "_top_down" if args.pcl_type == "top_down" else ""
-        args.output = Path(f"outputs/stage1_benchmark/combined/kpconvx/test_visualizations{suffix}")
-
-    if not 0 <= args.probability_threshold <= 1:
-        raise ValueError("--probability-threshold must lie in [0, 1]")
-    if args.skeleton_threshold_m <= 0:
-        raise ValueError("--skeleton-threshold-m must be positive")
-
-    raw_checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    if raw_checkpoint.get("stage") != "encoder":
-        raise ValueError(
-            f"expected an encoder checkpoint, found stage {raw_checkpoint.get('stage')!r}"
-        )
-    cfg = OmegaConf.create(raw_checkpoint["config"])
-    processed_root = args.processed_root or Path(str(cfg.data.processed_root))
-    split = str(args.split)
-    dataset_selection = normalise_dataset_selection(
-        args.dataset or cfg.data.get("dataset", "combined")
-    )
-    dataset = ProcessedPlantDataset(
-        processed_root, split=split, dataset=dataset_selection
-    )
-    if not len(dataset):
-        raise ValueError(f"processed split {split!r} contains no samples at {processed_root}")
-    samples = _select_samples(dataset, args.count, args.plant_id, args.pcl_type)
-
-    first = samples[0]
-    backbone = create_backbone_from_config(cfg.model.encoder)
-    model = PointEncoder(backbone, int(cfg.model.encoder.num_semantic_classes))
-    checkpoint = load_checkpoint(
-        args.checkpoint,
-        model,
-        expected_dataset_compatibility=processed_dataset_compatibility(
-            processed_root, dataset_selection
-        ),
-        allow_dataset_subset=True,
-        expected_max_nodes=len(first.node_xyz),
-    )
-    device = _device(args.device)
-    model.to(device).eval()
-    args.output.mkdir(parents=True, exist_ok=True)
-
+def _run_view(
+    *,
+    pcl_type: str,
+    samples: list[PlantSample],
+    output_dir: Path,
+    model: PointEncoder,
+    device: torch.device,
+    cfg: Any,
+    args: argparse.Namespace,
+    checkpoint: dict[str, Any],
+    checkpoint_hash: str,
+    processed_root: Path,
+    split: str,
+    dataset_selection: str,
+    skeleton_threshold_m: float,
+    junction_threshold_multiplier: float,
+    overall_accumulator: EncoderMetricAccumulator,
+    event_offset: int,
+    event_total: int,
+) -> dict[str, Any]:
+    """Render and score one selected view into its resolved output directory."""
+    output_dir.mkdir(parents=True, exist_ok=True)
     per_plant: dict[str, dict[str, float]] = {}
     accumulator = EncoderMetricAccumulator(
         int(cfg.model.encoder.num_semantic_classes),
-        skeleton_threshold_m=args.skeleton_threshold_m,
+        skeleton_threshold_m=skeleton_threshold_m,
+        junction_threshold_multiplier=junction_threshold_multiplier,
         probability_threshold=args.probability_threshold,
     )
-    checkpoint_hash = checkpoint_sha256(args.checkpoint)
-    manifest_path = args.output / "visualization_manifest.json"
+    manifest_path = output_dir / "visualization_manifest.json"
     manifest: dict[str, Any] = {
         "schema_version": "1.0",
         "checkpoint": str(args.checkpoint),
         "checkpoint_sha256": checkpoint_hash,
         "split": split,
         "dataset": dataset_selection,
-        "pcl_type": args.pcl_type,
+        "pcl_types": [pcl_type],
         "expected_plant_ids": [sample.plant_id for sample in samples],
         "renders": {},
     }
@@ -463,7 +401,8 @@ def main() -> None:
             metrics = encoder_metrics(
                 sample,
                 output,
-                skeleton_threshold_m=args.skeleton_threshold_m,
+                skeleton_threshold_m=skeleton_threshold_m,
+                junction_threshold_multiplier=junction_threshold_multiplier,
                 probability_threshold=args.probability_threshold,
             )
             losses = encoder_losses(
@@ -473,11 +412,13 @@ def main() -> None:
                 batch.node_xyz,
                 batch.node_valid,
                 batch.topology_role,
-                skeleton_threshold_m=args.skeleton_threshold_m,
+                skeleton_threshold_m=skeleton_threshold_m,
+                junction_threshold_multiplier=junction_threshold_multiplier,
             )
             accumulator.update(batch, output, losses)
+            overall_accumulator.update(batch, output, losses)
             per_plant[sample.plant_id] = metrics
-            output_path = args.output / f"{_safe_filename(sample.plant_id)}.png"
+            output_path = output_dir / f"{_safe_filename(sample.plant_id)}.png"
             render_encoder_prediction(
                 sample,
                 output,
@@ -486,27 +427,30 @@ def main() -> None:
                 probability_threshold=args.probability_threshold,
                 max_render_points=args.max_render_points,
             )
-            manifest["renders"][sample.plant_id] = {
+            render = {
                 "path": str(output_path),
                 "status": "complete",
                 "point_count": int(sample.point_valid.sum()),
             }
-            if args.pcl_type == "top_down":
-                manifest["renders"][sample.plant_id]["top_down"] = sample.metadata["top_down"]
+            if pcl_type in {"top_down", "side"}:
+                render[pcl_type] = sample.metadata[pcl_type]
+            manifest["renders"][sample.plant_id] = render
             manifest_path.write_text(
                 json.dumps(manifest, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            print(f"[{index}/{len(samples)}] wrote {output_path}", flush=True)
+            current = event_offset + index
+            print(f"[{current}/{event_total}] wrote {output_path}", flush=True)
             if os.environ.get("STAGE1_BENCHMARK_EVENTS") == "1":
                 print(
                     "@@STAGE1_BENCHMARK_EVENT@@"
                     + json.dumps(
                         {
                             "phase": "visualize",
-                            "plant": index,
-                            "plant_total": len(samples),
+                            "plant": current,
+                            "plant_total": event_total,
                             "plant_id": sample.plant_id,
+                            "pcl_type": pcl_type,
                         },
                         sort_keys=True,
                     ),
@@ -521,16 +465,199 @@ def main() -> None:
         "split": split,
         "dataset": dataset_selection,
         "sample_count": len(samples),
-        "pcl_type": args.pcl_type,
+        "pcl_types": [pcl_type],
+        "view_sample_counts": {pcl_type: len(samples)},
         "probability_threshold": args.probability_threshold,
-        "skeleton_threshold_m": args.skeleton_threshold_m,
+        "skeleton_threshold_m": skeleton_threshold_m,
+        "junction_threshold_multiplier": junction_threshold_multiplier,
         "aggregate": accumulator.compute(),
         "per_plant": per_plant,
     }
-    metrics_path = args.output / "metrics.json"
-    metrics_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    metrics_path = output_dir / "metrics.json"
+    metrics_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return report
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=Path("outputs/stage1_benchmark/combined/kpconvx/best.ckpt"),
+    )
+    parser.add_argument(
+        "--processed-root",
+        type=Path,
+        help="Processed cache root; defaults to data.processed_root stored in the checkpoint",
+    )
+    parser.add_argument("--split", default="test", help="Held-out split (default: test)")
+    parser.add_argument(
+        "--dataset",
+        help="Source dataset ID, or 'combined'; defaults to the checkpoint selection",
+    )
+    parser.add_argument("--count", type=int, default=3, help="Number of plants; use 0 for all")
+    parser.add_argument(
+        "--pcl-types",
+        nargs="+",
+        choices=POINT_CLOUD_TYPES,
+        default=["full"],
+        help="Ordered point-cloud views used for inference, metrics, and rendering",
+    )
+    parser.add_argument(
+        "--plant-id", action="append", default=[], help="Render this plant ID (repeatable)"
+    )
+    parser.add_argument("--output", type=Path, help="Output directory")
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--probability-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--skeleton-threshold-m",
+        type=float,
+        help="Override the value stored in the checkpoint configuration",
+    )
+    parser.add_argument(
+        "--junction-threshold-multiplier",
+        type=float,
+        help="Override the value stored in the checkpoint configuration",
+    )
+    parser.add_argument("--max-render-points", type=int, default=50_000)
+    args = parser.parse_args()
+    pcl_types = normalise_point_cloud_types(args.pcl_types)
+    if args.output is None:
+        suffix = f"_{pcl_types[0]}" if len(pcl_types) == 1 and pcl_types[0] != "full" else ""
+        args.output = Path(
+            f"outputs/stage1_benchmark/combined/kpconvx/test_visualizations{suffix}"
+        )
+
+    if not 0 <= args.probability_threshold <= 1:
+        raise ValueError("--probability-threshold must lie in [0, 1]")
+    if args.skeleton_threshold_m is not None and args.skeleton_threshold_m <= 0:
+        raise ValueError("--skeleton-threshold-m must be positive")
+    if (
+        args.junction_threshold_multiplier is not None
+        and args.junction_threshold_multiplier <= 0
+    ):
+        raise ValueError("--junction-threshold-multiplier must be positive")
+
+    raw_checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    if raw_checkpoint.get("stage") != "encoder":
+        raise ValueError(
+            f"expected an encoder checkpoint, found stage {raw_checkpoint.get('stage')!r}"
+        )
+    cfg = OmegaConf.create(raw_checkpoint["config"])
+    skeleton_threshold_m = float(
+        args.skeleton_threshold_m
+        if args.skeleton_threshold_m is not None
+        else cfg.model.encoder.skeleton_threshold_m
+    )
+    junction_threshold_multiplier = float(
+        args.junction_threshold_multiplier
+        if args.junction_threshold_multiplier is not None
+        else cfg.model.encoder.junction_threshold_multiplier
+    )
+    processed_root = args.processed_root or Path(str(cfg.data.processed_root))
+    split = str(args.split)
+    dataset_selection = normalise_dataset_selection(
+        args.dataset or cfg.data.get("dataset", "combined")
+    )
+    dataset = ProcessedPlantDataset(
+        processed_root, split=split, dataset=dataset_selection
+    )
+    if not len(dataset):
+        raise ValueError(f"processed split {split!r} contains no samples at {processed_root}")
+    samples_by_view = {
+        view: _select_samples(dataset, args.count, args.plant_id, view) for view in pcl_types
+    }
+
+    first = samples_by_view[pcl_types[0]][0]
+    backbone = create_backbone_from_config(cfg.model.encoder)
+    model = PointEncoder(backbone, int(cfg.model.encoder.num_semantic_classes))
+    checkpoint = load_checkpoint(
+        args.checkpoint,
+        model,
+        expected_dataset_compatibility=processed_dataset_compatibility(
+            processed_root, dataset_selection
+        ),
+        allow_dataset_subset=True,
+        expected_max_nodes=len(first.node_xyz),
+    )
+    device = _device(args.device)
+    model.to(device).eval()
+    args.output.mkdir(parents=True, exist_ok=True)
+    checkpoint_hash = checkpoint_sha256(args.checkpoint)
+    total = sum(len(samples) for samples in samples_by_view.values())
+    overall_accumulator = EncoderMetricAccumulator(
+        int(cfg.model.encoder.num_semantic_classes),
+        skeleton_threshold_m=skeleton_threshold_m,
+        junction_threshold_multiplier=junction_threshold_multiplier,
+        probability_threshold=args.probability_threshold,
+    )
+    view_reports: dict[str, dict[str, Any]] = {}
+    event_offset = 0
+    for view in pcl_types:
+        view_output = args.output if len(pcl_types) == 1 else args.output / view
+        view_reports[view] = _run_view(
+            pcl_type=view,
+            samples=samples_by_view[view],
+            output_dir=view_output,
+            model=model,
+            device=device,
+            cfg=cfg,
+            args=args,
+            checkpoint=checkpoint,
+            checkpoint_hash=checkpoint_hash,
+            processed_root=processed_root,
+            split=split,
+            dataset_selection=dataset_selection,
+            skeleton_threshold_m=skeleton_threshold_m,
+            junction_threshold_multiplier=junction_threshold_multiplier,
+            overall_accumulator=overall_accumulator,
+            event_offset=event_offset,
+            event_total=total,
+        )
+        event_offset += len(samples_by_view[view])
+
+    if len(pcl_types) > 1:
+        root_manifest = {
+            "schema_version": "1.0",
+            "checkpoint": str(args.checkpoint),
+            "checkpoint_sha256": checkpoint_hash,
+            "split": split,
+            "dataset": dataset_selection,
+            "pcl_types": list(pcl_types),
+            "views": {
+                view: {
+                    "output": str(args.output / view),
+                    "sample_count": len(samples_by_view[view]),
+                    "status": "complete",
+                }
+                for view in pcl_types
+            },
+        }
+        (args.output / "visualization_manifest.json").write_text(
+            json.dumps(root_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        root_metrics = {
+            "schema_version": "1.0",
+            "checkpoint": str(args.checkpoint),
+            "split": split,
+            "dataset": dataset_selection,
+            "pcl_types": list(pcl_types),
+            "sample_count": total,
+            "view_sample_counts": {
+                view: len(samples_by_view[view]) for view in pcl_types
+            },
+            "aggregate": overall_accumulator.compute(),
+            "views": view_reports,
+        }
+        (args.output / "metrics.json").write_text(
+            json.dumps(root_metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
     print(
-        f"rendered {len(samples)} {split} plant(s) on {device}; metrics: {metrics_path}",
+        f"rendered {total} {split} view sample(s) on {device}; metrics: "
+        f"{args.output / 'metrics.json'}",
         flush=True,
     )
 
