@@ -88,7 +88,7 @@ class DataTests(unittest.TestCase):
                         "dataset": dataset,
                         "split": split,
                         "status": "complete",
-                        "cache_file": f"{instance_id}/sample.npz",
+                        "cache_file": f"{instance_id}/full.npz",
                         "preprocessing_hash": f"hash-{dataset}",
                     }
                 )
@@ -126,7 +126,7 @@ class DataTests(unittest.TestCase):
             sample = make_tiny_sample(max_nodes=16, num_points=96)
             sample.plant_id = "plant_000001"
             sample.metadata["instance_id"] = sample.plant_id
-            source_path = root / sample.plant_id / "sample.npz"
+            source_path = root / sample.plant_id / "full.npz"
             save_processed_sample(sample, source_path)
             entry = {
                 "dataset": "fixture",
@@ -136,7 +136,7 @@ class DataTests(unittest.TestCase):
                 "source_instance_id": "scan-1",
                 "split": "train",
                 "status": "complete",
-                "cache_file": "plant_000001/sample.npz",
+                "cache_file": "plant_000001/full.npz",
             }
             write_processed_dataset_manifest(
                 root,

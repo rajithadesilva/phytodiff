@@ -303,7 +303,7 @@ class OtherDatasetConversionTests(unittest.TestCase):
                 side = partial.with_name("side.npz")
                 self.assertTrue(partial.is_file())
                 self.assertTrue(side.is_file())
-                full_hash = file_sha256(partial.with_name("sample.npz"))
+                full_hash = file_sha256(partial.with_name("full.npz"))
                 partial.unlink()
                 side.unlink()
                 backfill = convert(config)
@@ -315,7 +315,7 @@ class OtherDatasetConversionTests(unittest.TestCase):
                 changed = convert(config)
                 self.assertEqual(changed["skipped_instance_count"], 1)
                 self.assertEqual(changed["preprocessing_hash"], backfill["preprocessing_hash"])
-                self.assertEqual(file_sha256(partial.with_name("sample.npz")), full_hash)
+                self.assertEqual(file_sha256(partial.with_name("full.npz")), full_hash)
                 self.assertEqual(
                     changed["instances"][0]["top_down"]["point_count"],
                     changed["instances"][0]["point_count"],

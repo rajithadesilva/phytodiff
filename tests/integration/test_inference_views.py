@@ -15,9 +15,9 @@ def test_processed_multiview_inference_fans_out_outputs(tmp_path: Path) -> None:
     sample = make_tiny_sample(max_nodes=16, num_points=64)
     sample.plant_id = "plant_000001"
     sample.metadata["instance_id"] = sample.plant_id
-    source = tmp_path / sample.plant_id / "sample.npz"
+    source = tmp_path / sample.plant_id / "full.npz"
     save_processed_sample(sample, source)
-    entry = {"cache_file": f"{sample.plant_id}/sample.npz"}
+    entry = {"cache_file": f"{sample.plant_id}/full.npz"}
     ensure_top_down(tmp_path, entry, TopDownSettings(occlusion_radius_m=0.02))
     ensure_side(tmp_path, entry, SideSettings(occlusion_radius_m=0.02))
     output = tmp_path / "inference"

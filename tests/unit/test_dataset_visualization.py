@@ -30,11 +30,11 @@ def test_side_camera_projects_height_up_and_near_points_larger() -> None:
 
 def test_nine_panel_render_uses_saved_visibility_and_handles_missing(tmp_path: Path) -> None:
     sample = make_tiny_sample()
-    path = tmp_path / "sample.npz"
+    path = tmp_path / "full.npz"
     save_processed_sample(sample, path)
     assert load_top_down(path, sample) is None
     render(sample, tmp_path / "missing.png")
-    entry = {"cache_file": "sample.npz"}
+    entry = {"cache_file": "full.npz"}
     ensure_top_down(tmp_path, entry, TopDownSettings(occlusion_radius_m=0.02))
     ensure_side(tmp_path, entry, SideSettings(occlusion_radius_m=0.02))
     top_down = load_top_down(path, sample)
@@ -53,9 +53,9 @@ def test_nine_panel_render_uses_saved_visibility_and_handles_missing(tmp_path: P
 
 def test_stale_cloud_is_rejected(tmp_path: Path) -> None:
     sample = make_tiny_sample()
-    path = tmp_path / "sample.npz"
+    path = tmp_path / "full.npz"
     save_processed_sample(sample, path)
-    ensure_top_down(tmp_path, {"cache_file": "sample.npz"}, TopDownSettings())
+    ensure_top_down(tmp_path, {"cache_file": "full.npz"}, TopDownSettings())
     sample.xyz[0, 0] += 1
     save_processed_sample(sample, path)
     with pytest.raises(ValueError, match="stale"):

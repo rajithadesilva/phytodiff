@@ -591,7 +591,7 @@ def preprocess_dataset(
             if manifest_entry is None:
                 global_instance_id = plant_instance_id(next_number)
                 next_number += 1
-                cache_relative = Path(global_instance_id) / "sample.npz"
+                cache_relative = Path(global_instance_id) / "full.npz"
                 manifest_entry = {
                     **dataset_identity,
                     "instance_id": global_instance_id,

@@ -20,9 +20,9 @@ dataset-agnostic collection rooted at `data/dataset`:
 data/dataset/
   manifest.json
   plant_000001/
-    sample.npz
-    sample.graph.json
-    sample.params.json
+    full.npz
+    full.graph.json
+    full.params.json
     context.npz              # only when support context exists
   plant_000002/
     ...

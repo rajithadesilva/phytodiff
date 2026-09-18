@@ -31,13 +31,13 @@ class EncoderVisualizationTests(unittest.TestCase):
         sample = make_tiny_sample(max_nodes=16, num_points=96)
         sample.plant_id = "plant_000001"
         sample.metadata["instance_id"] = sample.plant_id
-        path = root / sample.plant_id / "sample.npz"
+        path = root / sample.plant_id / "full.npz"
         save_processed_sample(sample, path)
         entry = {
             "dataset": "fixture", "plant_id": sample.plant_id,
             "instance_id": sample.plant_id, "source_plant_id": "source_plant",
             "source_instance_id": "source_instance", "split": "test", "status": "complete",
-            "cache_file": "plant_000001/sample.npz",
+            "cache_file": "plant_000001/full.npz",
             "preprocessing_hash": "fixture-preprocessing-hash",
         }
         write_processed_dataset_manifest(root, {

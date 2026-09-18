@@ -216,7 +216,7 @@ def ensure_fixed_view(
         **stats,
         "view_direction": list(spec.view_direction),
         **dict(spec.metadata),
-        "full_sample_file": source_path.name,
+        "full_point_cloud_file": source_path.name,
         "graph_target_file": source_path.with_suffix(".graph.json").name,
         "param_target_file": source_path.with_suffix(".params.json").name,
     }

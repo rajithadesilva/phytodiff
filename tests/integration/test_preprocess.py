@@ -60,7 +60,7 @@ class PreprocessingIntegrationTests(unittest.TestCase):
                                 "source_instance_id": "T01_0305_a",
                                 "plant_id": "plant_000007",
                                 "source_plant_id": "Tomato01",
-                                "cache_file": "plant_000007/sample.npz",
+                                "cache_file": "plant_000007/full.npz",
                                 "split": "train",
                                 "status": "processing",
                             }
@@ -115,7 +115,7 @@ class PreprocessingIntegrationTests(unittest.TestCase):
             side_path = partial_path.with_name("side.npz")
             self.assertTrue(partial_path.is_file())
             self.assertTrue(side_path.is_file())
-            full_path = partial_path.with_name("sample.npz")
+            full_path = partial_path.with_name("full.npz")
             full_hash = file_sha256(full_path)
             partial_path.unlink()
             side_path.unlink()
@@ -181,12 +181,12 @@ class PreprocessingIntegrationTests(unittest.TestCase):
             self.assertEqual(sample.metadata["official_gt_parent_ids"], [None, 0, 1, 1, 3])
             self.assertEqual(sample.metadata["official_gt_edge_types"], ["", "<", "<", "+", "<"])
             instance_dir = dataset_root / "plant_000012"
-            self.assertTrue((instance_dir / "sample.npz").is_file())
-            self.assertTrue((instance_dir / "sample.graph.json").is_file())
-            self.assertTrue((instance_dir / "sample.params.json").is_file())
+            self.assertTrue((instance_dir / "full.npz").is_file())
+            self.assertTrue((instance_dir / "full.graph.json").is_file())
+            self.assertTrue((instance_dir / "full.params.json").is_file())
             self.assertFalse((instance_dir / "quality.json").exists())
             self.assertFalse((dataset_root / "tomatowur").exists())
-            graph = json.loads((instance_dir / "sample.graph.json").read_text())
+            graph = json.loads((instance_dir / "full.graph.json").read_text())
             self.assertEqual(graph["coordinate_frame"], {"meters_per_unit": 1.0, "up_axis": "Z"})
             self.assertEqual(
                 [edge["edge_type"] for edge in graph["edges"]],
@@ -299,8 +299,8 @@ class PreprocessingIntegrationTests(unittest.TestCase):
                 ["fixture_plant", "fixture_plant_scan_2"],
             )
             self.assertEqual(len(ProcessedPlantDataset(dataset_root)), 2)
-            self.assertTrue((dataset_root / "plant_000001/sample.npz").is_file())
-            self.assertTrue((dataset_root / "plant_000002/sample.npz").is_file())
+            self.assertTrue((dataset_root / "plant_000001/full.npz").is_file())
+            self.assertTrue((dataset_root / "plant_000002/full.npz").is_file())
 
 
 if __name__ == "__main__":

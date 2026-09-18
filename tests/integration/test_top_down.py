@@ -28,7 +28,7 @@ def create_dataset(root: Path) -> dict:
         metadata = {"point_to_original_index": [10, 20, 30, 40],
                     "normalised_to_original": np.eye(4).tolist(), "dataset": "fixture"}
         np.savez_compressed(
-            folder / "sample.npz", xyz=xyz, rgb=xyz + 1, normals=xyz + 2,
+            folder / "full.npz", xyz=xyz, rgb=xyz + 1, normals=xyz + 2,
             semantic=np.arange(4), instance=np.arange(4) + 5,
             point_valid=np.array([True, True, True, False]),
             plant_id=np.asarray(plant_id), instance_id=np.asarray(plant_id),
@@ -39,9 +39,9 @@ def create_dataset(root: Path) -> dict:
         entries.append({
             "dataset": "fixture", "instance_id": plant_id, "plant_id": plant_id,
             "source_plant_id": plant_id, "source_instance_id": plant_id,
-            "cache_file": f"{plant_id}/sample.npz", "status": "complete", "split": "train",
+            "cache_file": f"{plant_id}/full.npz", "status": "complete", "split": "train",
             "preprocessing_hash": "unchanged-full-contract",
-            "cache_sha256": file_sha256(folder / "sample.npz"),
+            "cache_sha256": file_sha256(folder / "full.npz"),
         })
     manifest = {"schema_version": "1.0", "layout": "flat-plant-instance-v1",
                 "datasets": {"fixture": {"dataset": "fixture"}}, "instances": entries}
@@ -51,7 +51,7 @@ def create_dataset(root: Path) -> dict:
 
 def test_backfill_alignment_repair_and_full_contract(tmp_path: Path) -> None:
     original = create_dataset(tmp_path)
-    hashes = {p: file_sha256(p) for p in tmp_path.glob("plant_*/sample.*")}
+    hashes = {p: file_sha256(p) for p in tmp_path.glob("plant_*/full.*")}
     compatibility = processed_dataset_compatibility(tmp_path)
     report = generate_top_down_dataset(tmp_path)
     assert report["generated"] == 2 and not report["failures"]
@@ -71,7 +71,8 @@ def test_backfill_alignment_repair_and_full_contract(tmp_path: Path) -> None:
             metadata = json.loads(partial["metadata_json"].item())
             assert metadata["point_to_original_index"] == [20, 30]
             assert metadata["normalised_to_original"] == np.eye(4).tolist()
-            assert metadata["top_down"]["graph_target_file"] == "sample.graph.json"
+            assert metadata["top_down"]["full_point_cloud_file"] == "full.npz"
+            assert metadata["top_down"]["graph_target_file"] == "full.graph.json"
             assert entry["top_down"]["retained_fraction"] == 2 / 3
     assert generate_top_down_dataset(tmp_path)["skipped"] == 2
     assert (tmp_path / "manifest.json").read_bytes() == manifest_bytes
@@ -108,7 +109,7 @@ def test_changed_source_and_version_regenerate(tmp_path: Path) -> None:
 
 def test_failures_continue_and_cli_returns_nonzero(tmp_path: Path) -> None:
     create_dataset(tmp_path)
-    (tmp_path / "plant_000001/sample.npz").write_bytes(b"broken source")
+    (tmp_path / "plant_000001/full.npz").write_bytes(b"broken source")
     assert main([str(tmp_path)]) == 1
     assert (tmp_path / "plant_000002/top_down.npz").is_file()
     manifest = json.loads((tmp_path / "manifest.json").read_text())
@@ -130,4 +131,4 @@ def test_atomic_write_failure_preserves_previous_artifact(tmp_path: Path) -> Non
             ensure_top_down(tmp_path, entry, TopDownSettings(occlusion_radius_m=0))
     assert path.read_bytes() == before
     assert entry["top_down"] == previous
-    assert sorted(p.name for p in path.parent.glob("*.npz")) == ["sample.npz", "top_down.npz"]
+    assert sorted(p.name for p in path.parent.glob("*.npz")) == ["full.npz", "top_down.npz"]

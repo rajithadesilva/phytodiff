@@ -368,7 +368,7 @@ def convert_complete_records(
                 "plant_id": global_id,
                 "source_plant_id": record.plant_id,
                 "point_cloud_id": record.point_cloud_path.stem,
-                "cache_file": f"{global_id}/sample.npz",
+                "cache_file": f"{global_id}/full.npz",
                 "split": record.split,
                 "preprocessing_hash": preprocessing_hash,
                 "source_hashes": source_hashes,

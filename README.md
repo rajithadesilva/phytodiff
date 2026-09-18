@@ -112,7 +112,7 @@ recorded in `source_label_correction` metadata and the preprocessing contract.
 #### Fixed-view partial point clouds
 
 Every preparation command writes `plant_<number>/top_down.npz` and
-`plant_<number>/side.npz` alongside the full `sample.npz`. The side sensor is at
+`plant_<number>/side.npz` alongside the full `full.npz`. The side sensor is at
 +Y and looks along −Y onto X–Z. To add either view to an existing dataset without
 reading the raw source scans, run from the repository root:
 
@@ -167,7 +167,7 @@ full instance is otherwise skipped.
 
 Each partial NPZ stores `xyz`, `rgb`, `normals`, `semantic`, `instance`, and
 `point_valid` in source-row order, plus `source_point_indices` mapping to rows in
-`sample.npz`. `metadata_json` preserves coordinate/provenance metadata and subsets
+`full.npz`. `metadata_json` preserves coordinate/provenance metadata and subsets
 `point_to_original_index` when available. Its `top_down` or `side` section records
 the view direction, projection, settings, algorithm version, source checksum, and
 references to the full sample's graph and parameter targets; target geometry stays
@@ -236,7 +236,7 @@ python -c "import torch; c=torch.load('outputs/encoder/combined/best.ckpt', map_
 training stage. It is a non-empty ordered array containing unique entries from
 `full`, `top_down`, and `side`:
 
-- `[full]` uses each `sample.npz` once (the default).
+- `[full]` uses each `full.npz` once (the default).
 - `[side]` uses each `side.npz` once.
 - `[full,top_down,side]` presents three examples per plant in that order, with
   every derived view sharing the full reconstruction target.
@@ -440,7 +440,7 @@ Prerequisite: Stage 5 checkpoint and a processed `.npz` (or isolated TomatoWUR-s
 
 ```bash
 python -m tomato_recon.infer --config-name infer \
-  input.path=data/dataset/plant_000001/sample.npz \
+  input.path=data/dataset/plant_000001/full.npz \
   data.pcl_types=[full,top_down,side] \
   model.pipeline_checkpoint=outputs/joint/best.ckpt \
   inference.num_diffusion_samples=4 output.dir=outputs/inference/plant_000001

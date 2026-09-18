@@ -120,7 +120,7 @@ or repeatedly choose models using test results.
 ## 13. Infer one sample and export
 
 - Prerequisite: joint checkpoint and processed NPZ or isolated CSV/ASCII PLY.
-- Command: `python -m tomato_recon.infer --config-name infer input.path=data/dataset/plant_000001/sample.npz model.pipeline_checkpoint=outputs/joint/best.ckpt inference.num_diffusion_samples=4 output.dir=outputs/inference/plant_000001`.
+- Command: `python -m tomato_recon.infer --config-name infer input.path=data/dataset/plant_000001/full.npz model.pipeline_checkpoint=outputs/joint/best.ckpt inference.num_diffusion_samples=4 output.dir=outputs/inference/plant_000001`.
 - Expected: every file in the inference output contract, including graph, parameters, mesh, traits, uncertainty, preview, USD, and report.
 - Verify: open JSON/PLY outputs and check `export_report.json`; ground-truth node count is not read by sampling.
 

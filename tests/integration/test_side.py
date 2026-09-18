@@ -21,7 +21,7 @@ from tomato_recon.data.top_down import POINT_FIELDS, file_sha256
 
 def test_side_backfill_alignment_metadata_repair_and_full_contract(tmp_path: Path) -> None:
     original = create_dataset(tmp_path)
-    hashes = {path: file_sha256(path) for path in tmp_path.glob("plant_*/sample.*")}
+    hashes = {path: file_sha256(path) for path in tmp_path.glob("plant_*/full.*")}
     compatibility = processed_dataset_compatibility(tmp_path)
     report = generate_side_dataset(tmp_path)
     assert report["generated"] == 2 and not report["failures"]
@@ -41,7 +41,8 @@ def test_side_backfill_alignment_metadata_repair_and_full_contract(tmp_path: Pat
             assert metadata["side"]["sensor_side"] == "+Y"
             assert metadata["side"]["projection_axes"] == ["X", "Z"]
             assert metadata["side"]["algorithm_version"] == ALGORITHM_VERSION
-            assert metadata["side"]["graph_target_file"] == "sample.graph.json"
+            assert metadata["side"]["full_point_cloud_file"] == "full.npz"
+            assert metadata["side"]["graph_target_file"] == "full.graph.json"
             assert entry["side"]["retained_fraction"] == 1.0
     assert generate_side_dataset(tmp_path)["skipped"] == 2
     assert (tmp_path / "manifest.json").read_bytes() == manifest_bytes
@@ -81,7 +82,7 @@ def test_side_failures_continue_cli_and_atomic_write(tmp_path: Path) -> None:
     assert path.read_bytes() == before
     assert entry["side"] == previous
 
-    (tmp_path / "plant_000001/sample.npz").write_bytes(b"broken source")
+    (tmp_path / "plant_000001/full.npz").write_bytes(b"broken source")
     assert main([str(tmp_path)]) == 1
     assert (tmp_path / "plant_000002/side.npz").is_file()
     with pytest.raises(SystemExit) as error:

@@ -93,7 +93,7 @@ def _validate_flat_manifest(manifest: Mapping[str, Any], *, path: Path) -> None:
         status = str(entry.get("status", ""))
         if status not in {"processing", "complete"}:
             raise ValueError(f"instance {instance_id!r} has invalid status {status!r} in {path}")
-        expected_cache = f"{instance_id}/sample.npz"
+        expected_cache = f"{instance_id}/full.npz"
         if entry.get("cache_file") != expected_cache:
             raise ValueError(
                 f"instance {instance_id!r} must use cache_file {expected_cache!r} in {path}"
