@@ -5,14 +5,16 @@ import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
 import torch
 
-from scripts.run_stage1_benchmark import (
+from scripts.run_stage1_ablation_1 import (
     DATASETS,
     MODELS,
-    BenchmarkProgress,
+    Ablation1Progress,
     _pcl_types_cli,
     _pcl_types_override,
+    _require_ablation_1_record,
     _recorded_pcl_types,
     _visualizations_complete,
     _write_comparison,
@@ -21,6 +23,7 @@ from tomato_recon.evaluation.encoder import EncoderMetricAccumulator
 from tomato_recon.models.encoders.base import PointEncoder
 from tomato_recon.models.encoders.kpconvx import KPConvXAdapter
 from tomato_recon.models.pretrained import verify_sonata_checkpoint
+from tomato_recon.train.common import checkpoint_sha256
 
 
 def test_kpconvx_dense_shapes_masks_and_backward() -> None:
@@ -80,7 +83,7 @@ def test_overall_metric_formula() -> None:
 def test_benchmark_progress_is_monotonic_and_persisted() -> None:
     with TemporaryDirectory() as directory:
         path = Path(directory) / "progress.jsonl"
-        progress = BenchmarkProgress(path, run_count=12)
+        progress = Ablation1Progress(path, run_count=12)
         progress.emit(0, "tomatowur", "pointnext", "train", 0.45, "epoch 25/50", epoch=25)
         progress.emit(0, "tomatowur", "pointnext", "train", 0.90, "epoch 50/50", epoch=50)
         progress.emit(
@@ -109,6 +112,35 @@ def test_benchmark_forwards_ordered_view_array_to_both_command_interfaces() -> N
     assert _pcl_types_cli(pcl_types) == [
         "--pcl-types", "side", "full", "top_down",
     ]
+
+
+def test_ablation_1_resume_record_requires_exact_configuration_and_checkpoint(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "best.ckpt"
+    checkpoint.write_bytes(b"checkpoint")
+    record = {
+        "status": "complete",
+        "dataset": "combined",
+        "model": "kpconvx",
+        "pcl_types": ["full", "side"],
+        "checkpoint_sha256": checkpoint_sha256(checkpoint),
+    }
+    _require_ablation_1_record(
+        record,
+        dataset="combined",
+        model="kpconvx",
+        pcl_types=("full", "side"),
+        checkpoint=checkpoint,
+    )
+    with pytest.raises(ValueError, match="stale"):
+        _require_ablation_1_record(
+            record,
+            dataset="combined",
+            model="kpconvx",
+            pcl_types=("side", "full"),
+            checkpoint=checkpoint,
+        )
 
 
 def test_multiview_visualization_completion_requires_every_ordered_view(
@@ -170,6 +202,7 @@ def test_comparison_outputs_rank_by_validation_and_link_visualizations() -> None
                     "status": "complete",
                     "dataset": dataset,
                     "model": model,
+                    "checkpoint": str(output / dataset / model / "best.ckpt"),
                     "training": {"best_epoch": index + 1},
                     "validation": {
                         "split": "val",
@@ -208,6 +241,11 @@ def test_comparison_outputs_rank_by_validation_and_link_visualizations() -> None
             == "complete"
         )
         assert report["test_used_for_selection"] is False
+        winner = json.loads((output / "winner.json").read_text())
+        assert winner["model"] == "kpconvx"
+        assert winner["dataset"] == "combined"
+        assert winner["selection_split"] == "val"
+        assert winner["test_used_for_selection"] is False
         assert "combined/kpconvx/test_visualizations/" in (
             output / "comparison.md"
         ).read_text()
@@ -220,3 +258,30 @@ def test_comparison_outputs_rank_by_validation_and_link_visualizations() -> None
             "combined_models_by_dataset.png",
         ):
             assert (output / name).is_file()
+
+
+def test_ablation_1_does_not_publish_a_provisional_winner(tmp_path: Path) -> None:
+    metrics = {
+        "overall_score": 0.7,
+        "semantic_miou": 0.7,
+        "skeleton_f1": 0.7,
+        "centreline_offset_mae_mm": 1.0,
+        "junction_f1": 0.7,
+    }
+    result = {
+        "status": "complete",
+        "dataset": "combined",
+        "model": "pointnext",
+        "checkpoint": str(tmp_path / "combined" / "pointnext" / "best.ckpt"),
+        "validation": {"split": "val", "metrics": metrics},
+        "test": {"split": "test", "metrics": metrics},
+    }
+    _write_comparison(
+        tmp_path,
+        {"combined/pointnext": result},
+        datasets=("combined",),
+        models=MODELS,
+    )
+    assert not (tmp_path / "winner.json").exists()
+    report = json.loads((tmp_path / "comparison.json").read_text())
+    assert report["winner"] is None

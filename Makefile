@@ -1,4 +1,4 @@
-.PHONY: install test smoke docker-build preprocess generate-top-down generate-side visualize-dataset prepare-stage1-models stage1-benchmark visualize-stage1-test
+.PHONY: install test smoke docker-build preprocess generate-top-down generate-side visualize-dataset prepare-stage1-models stage1-ablation-1 stage1-ablation-2 visualize-stage1-test
 
 DATASET_ROOT ?= data/dataset
 TOP_DOWN_OCCLUSION_RADIUS_M ?= 0.003
@@ -10,14 +10,18 @@ DATASET_VIS_COUNT ?= 0
 DATASET_VIS_AZIMUTH_DEG ?= 35
 DATASET_VIS_ELEVATION_DEG ?= 15
 
-STAGE1_CHECKPOINT ?= outputs/stage1_benchmark/combined/kpconvx/best.ckpt
+STAGE1_CHECKPOINT ?= outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
 STAGE1_PROCESSED_ROOT ?= data/dataset
 STAGE1_PCL_TYPES ?= full
-STAGE1_VIS_OUTPUT ?= outputs/stage1_benchmark/combined/kpconvx/test_visualizations$(if $(filter 1,$(words $(STAGE1_PCL_TYPES))),$(if $(filter full,$(STAGE1_PCL_TYPES)),,_$(firstword $(STAGE1_PCL_TYPES))),)
-STAGE1_BENCHMARK_OUTPUT ?= outputs/stage1_benchmark
+STAGE1_VIS_OUTPUT ?= outputs/stage1_ablation_1/combined/kpconvx/test_visualizations$(if $(filter 1,$(words $(STAGE1_PCL_TYPES))),$(if $(filter full,$(STAGE1_PCL_TYPES)),,_$(firstword $(STAGE1_PCL_TYPES))),)
+STAGE1_ABLATION1_OUTPUT ?= outputs/stage1_ablation_1
+STAGE1_ABLATION1_DATASET ?= combined
+STAGE1_ABLATION1_PCL_TYPES ?= full
+STAGE1_ABLATION1_RESUME ?=
+STAGE1_ABLATION2_OUTPUT ?= outputs/stage1_ablation_2
+STAGE1_ABLATION2_ABLATION1_OUTPUT ?= $(STAGE1_ABLATION1_OUTPUT)
+STAGE1_ABLATION2_RESUME ?=
 STAGE1_EPOCHS ?= 50
-STAGE1_BENCHMARK_RESUME ?=
-STAGE1_TRAIN_PCL_TYPES ?= full
 
 install:
 	python -m pip install -e ".[dev]"
@@ -60,13 +64,22 @@ prepare-stage1-models:
 	docker compose -f docker/docker-compose.yml run --rm train \
 		python -u scripts/prepare_stage1_models.py
 
-stage1-benchmark:
+stage1-ablation-1:
 	docker compose -f docker/docker-compose.yml run --rm train \
-		python -u scripts/run_stage1_benchmark.py \
+		python -u scripts/run_stage1_ablation_1.py \
 		--processed-root $(STAGE1_PROCESSED_ROOT) \
-		--output $(STAGE1_BENCHMARK_OUTPUT) \
-		--pcl-types $(STAGE1_TRAIN_PCL_TYPES) \
-		--max-epochs $(STAGE1_EPOCHS) $(STAGE1_BENCHMARK_RESUME)
+		--output $(STAGE1_ABLATION1_OUTPUT) \
+		--dataset $(STAGE1_ABLATION1_DATASET) \
+		--pcl-types $(STAGE1_ABLATION1_PCL_TYPES) \
+		--max-epochs $(STAGE1_EPOCHS) $(STAGE1_ABLATION1_RESUME)
+
+stage1-ablation-2:
+	docker compose -f docker/docker-compose.yml run --rm train \
+		python -u scripts/run_stage1_ablation_2.py \
+		--processed-root $(STAGE1_PROCESSED_ROOT) \
+		--ablation-1-output $(STAGE1_ABLATION2_ABLATION1_OUTPUT) \
+		--output $(STAGE1_ABLATION2_OUTPUT) \
+		--max-epochs $(STAGE1_EPOCHS) $(STAGE1_ABLATION2_RESUME)
 
 visualize-stage1-test:
 	docker compose -f docker/docker-compose.yml run --rm train \

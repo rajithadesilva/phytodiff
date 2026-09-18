@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark every Stage 1 encoder on each source dataset and their combination."""
+"""Run Stage 1 Ablation 1 across encoder architectures."""
 
 from __future__ import annotations
 
@@ -20,15 +20,17 @@ from PIL import Image, ImageDraw
 from tomato_recon.data.processed import (
     POINT_CLOUD_TYPES,
     ProcessedPlantDataset,
+    normalise_dataset_selection,
     normalise_point_cloud_types,
 )
 from tomato_recon.models.encoders.registry import ensure_backbone_available
 from tomato_recon.models.pretrained import verify_sonata_checkpoint
+from tomato_recon.train.common import checkpoint_sha256
 
 MODELS = ("pointnext", "sonata_ptv3", "kpconvx")
 DATASETS = ("tomatowur", "tomatopgt", "pheno4d", "combined")
 SOURCE_DATASETS = tuple(dataset for dataset in DATASETS if dataset != "combined")
-EVENT_PREFIX = "@@STAGE1_BENCHMARK_EVENT@@"
+EVENT_PREFIX = "@@STAGE1_ABLATION_EVENT@@"
 
 
 def _duration(seconds: float | None) -> str:
@@ -40,8 +42,8 @@ def _duration(seconds: float | None) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds_int:02d}"
 
 
-class BenchmarkProgress:
-    """Global, monotonic progress for the complete model-by-dataset matrix."""
+class Ablation1Progress:
+    """Global, monotonic progress for the encoder-model comparison."""
 
     def __init__(self, output: Path, run_count: int) -> None:
         self.output = output
@@ -83,7 +85,7 @@ class BenchmarkProgress:
         with self.output.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, sort_keys=True) + "\n")
         print(
-            f"[Stage 1 benchmark {percent:5.1f}%] run {run_index + 1}/{self.run_count} "
+            f"[Stage 1 Ablation 1 {percent:5.1f}%] run {run_index + 1}/{self.run_count} "
             f"{dataset}/{model} | {detail} | elapsed {_duration(elapsed)} | "
             f"ETA {_duration(eta)}",
             flush=True,
@@ -93,7 +95,7 @@ class BenchmarkProgress:
 def _run(command: list[str], event_handler: Callable[[dict[str, Any]], None] | None = None) -> None:
     environment = os.environ.copy()
     environment["PYTHONUNBUFFERED"] = "1"
-    environment["STAGE1_BENCHMARK_EVENTS"] = "1"
+    environment["STAGE1_ABLATION_EVENTS"] = "1"
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -126,13 +128,21 @@ def _recorded_pcl_types(values: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _single_view_visualizations_complete(
-    path: Path, expected_ids: list[str], expected_view: str | None = None
+    path: Path,
+    expected_ids: list[str],
+    expected_view: str | None = None,
+    expected_checkpoint_sha256: str | None = None,
 ) -> bool:
     manifest_path = path / "visualization_manifest.json"
     if not manifest_path.is_file():
         return False
     manifest = _read_json(manifest_path)
     if expected_view is not None and manifest.get("pcl_types") != [expected_view]:
+        return False
+    if (
+        expected_checkpoint_sha256 is not None
+        and manifest.get("checkpoint_sha256") != expected_checkpoint_sha256
+    ):
         return False
     renders = manifest.get("renders", {})
     return all(
@@ -144,20 +154,91 @@ def _single_view_visualizations_complete(
 
 
 def _visualizations_complete(
-    path: Path, expected_ids: list[str], pcl_types: tuple[str, ...] = ("full",)
+    path: Path,
+    expected_ids: list[str],
+    pcl_types: tuple[str, ...] = ("full",),
+    expected_checkpoint_sha256: str | None = None,
 ) -> bool:
     if len(pcl_types) == 1:
-        return _single_view_visualizations_complete(path, expected_ids, pcl_types[0])
+        return _single_view_visualizations_complete(
+            path,
+            expected_ids,
+            pcl_types[0],
+            expected_checkpoint_sha256,
+        )
     manifest_path = path / "visualization_manifest.json"
     if not manifest_path.is_file():
         return False
     manifest = _read_json(manifest_path)
     if tuple(manifest.get("pcl_types", ())) != pcl_types:
         return False
+    if (
+        expected_checkpoint_sha256 is not None
+        and manifest.get("checkpoint_sha256") != expected_checkpoint_sha256
+    ):
+        return False
     return all(
-        _single_view_visualizations_complete(path / view, expected_ids, view)
+        _single_view_visualizations_complete(
+            path / view,
+            expected_ids,
+            view,
+            expected_checkpoint_sha256,
+        )
         for view in pcl_types
     )
+
+
+def _require_ablation_1_record(
+    record: dict[str, Any],
+    *,
+    dataset: str,
+    model: str,
+    pcl_types: tuple[str, ...],
+    checkpoint: Path,
+) -> None:
+    expected = {
+        "dataset": dataset,
+        "model": model,
+        "pcl_types": list(pcl_types),
+    }
+    actual = {
+        "dataset": record.get("dataset"),
+        "model": record.get("model"),
+        "pcl_types": list(_recorded_pcl_types(record)),
+    }
+    if record.get("status") != "complete" or actual != expected:
+        raise ValueError(
+            f"stale Ablation 1 record at {checkpoint.parent}: "
+            f"expected {expected}, got {actual}"
+        )
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Ablation 1 checkpoint is missing: {checkpoint}")
+    checksum = checkpoint_sha256(checkpoint)
+    if record.get("checkpoint_sha256") != checksum:
+        raise ValueError(f"Ablation 1 checkpoint checksum changed: {checkpoint}")
+
+
+def _require_evaluation_report(
+    report: dict[str, Any],
+    *,
+    dataset: str,
+    pcl_types: tuple[str, ...],
+    checkpoint: Path,
+) -> None:
+    expected = {
+        "dataset": dataset,
+        "pcl_types": list(pcl_types),
+        "checkpoint": str(checkpoint),
+    }
+    actual = {
+        "dataset": report.get("evaluation_dataset"),
+        "pcl_types": report.get("evaluation_pcl_types", report.get("pcl_types")),
+        "checkpoint": report.get("checkpoint"),
+    }
+    if actual != expected:
+        raise ValueError(
+            f"stale Ablation 1 evaluation report: expected {expected}, got {actual}"
+        )
 
 
 def _chart(path: Path, title: str, values: dict[str, list[tuple[str, float]]]) -> None:
@@ -243,8 +324,25 @@ def _write_comparison(
     aggregate_ranking = sorted(
         aggregate_scores, key=aggregate_scores.__getitem__, reverse=True
     )
+    all_models_complete = all(
+        results.get(_run_key(dataset, model), {}).get("status") == "complete"
+        for dataset in datasets
+        for model in models
+    )
+    winner_model = aggregate_ranking[0] if all_models_complete and aggregate_ranking else None
+    winner_dataset = (
+        datasets[0]
+        if len(datasets) == 1
+        else ("combined" if "combined" in datasets else datasets[0])
+    )
+    winner_result = (
+        results.get(_run_key(winner_dataset, winner_model), {})
+        if winner_model is not None
+        else {}
+    )
     report = {
-        "schema_version": "3.0",
+        "schema_version": "4.0",
+        "experiment": "stage1_ablation_1",
         "pcl_types": list(
             next(
                 (
@@ -260,7 +358,9 @@ def _write_comparison(
         "datasets": dataset_reports,
         "aggregate_validation_mean": aggregate_scores,
         "aggregate_ranking": aggregate_ranking,
-        "aggregate_winner": aggregate_ranking[0] if aggregate_ranking else None,
+        "aggregate_winner": winner_model,
+        "winner": winner_model,
+        "dataset_selection": winner_dataset,
         "combined_winner": dataset_reports.get("combined", {}).get("winner"),
         "combined_models_by_dataset": {
             model: {
@@ -277,6 +377,28 @@ def _write_comparison(
     (output / "comparison.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    winner_path = output / "winner.json"
+    if winner_model is not None and winner_result.get("status") == "complete":
+        winner_record = {
+            "schema_version": "1.0",
+            "experiment": "stage1_ablation_1",
+            "status": "complete",
+            "selection_split": "val",
+            "test_used_for_selection": False,
+            "dataset": winner_dataset,
+            "pcl_types": list(_recorded_pcl_types(winner_result)),
+            "model": winner_model,
+            "checkpoint": winner_result["checkpoint"],
+            "validation_overall_score": winner_result["validation"]["metrics"][
+                "overall_score"
+            ],
+        }
+        winner_path.write_text(
+            json.dumps(winner_record, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        winner_path.unlink(missing_ok=True)
 
     metric_fields = [
         "loss",
@@ -393,7 +515,7 @@ def _write_comparison(
                     )
 
     lines = [
-        "# Stage 1 encoder benchmark",
+        "# Stage 1 Ablation 1: encoder architecture",
         "",
         "Each model is ranked independently on each dataset by validation overall score. "
         "Held-out test metrics are reported only after training and are never used for selection.",
@@ -428,31 +550,32 @@ def _write_comparison(
                     f"{result.get('error', result.get('status', 'not run'))} |"
                 )
 
-    lines.extend(
-        [
-            "",
-            "## Cross-dataset validation mean",
-            "",
-            "This summary includes a model only after all requested dataset runs complete.",
-            "",
-            "| Rank | Model | Mean validation overall |",
-            "|---:|---|---:|",
-        ]
-    )
-    for rank, model in enumerate(aggregate_ranking, start=1):
-        lines.append(f"| {rank} | {model} | {aggregate_scores[model]:.4f} |")
+    if len(datasets) > 1:
+        lines.extend(
+            [
+                "",
+                "## Cross-dataset validation mean",
+                "",
+                "This summary includes a model only after all requested dataset runs complete.",
+                "",
+                "| Rank | Model | Mean validation overall |",
+                "|---:|---|---:|",
+            ]
+        )
+        for rank, model in enumerate(aggregate_ranking, start=1):
+            lines.append(f"| {rank} | {model} | {aggregate_scores[model]:.4f} |")
 
-    lines.extend(
-        [
-            "",
-            "## Combined-trained models evaluated by source dataset",
-            "",
-            "These checkpoints were selected using the combined validation split, then "
-            "evaluated without retraining on each source subset.",
-        ]
-    )
+        lines.extend(
+            [
+                "",
+                "## Combined-trained models evaluated by source dataset",
+                "",
+                "These checkpoints were selected using the combined validation split, then "
+                "evaluated without retraining on each source subset.",
+            ]
+        )
     for dataset in SOURCE_DATASETS:
-        if dataset not in datasets:
+        if len(datasets) <= 1 or dataset not in datasets:
             continue
         lines.extend(
             [
@@ -501,7 +624,7 @@ def _write_comparison(
             ]
         _chart(
             output / "overall_scores.png",
-            "Stage 1 overall scores by dataset",
+            "Stage 1 Ablation 1 overall scores",
             overall_groups,
         )
     complete_combined_evaluations = {
@@ -546,7 +669,7 @@ def _write_comparison(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--processed-root", type=Path, default=Path("data/dataset"))
-    parser.add_argument("--output", type=Path, default=Path("outputs/stage1_benchmark"))
+    parser.add_argument("--output", type=Path, default=Path("outputs/stage1_ablation_1"))
     parser.add_argument("--max-epochs", type=int, default=50)
     parser.add_argument(
         "--pcl-types",
@@ -556,16 +679,20 @@ def main() -> None:
         help="Ordered point-cloud views used for training and evaluation",
     )
     parser.add_argument(
-        "--datasets", nargs="+", choices=DATASETS, default=list(DATASETS)
+        "--dataset",
+        default="combined",
+        help="One source dataset selection used for every encoder model",
     )
     parser.add_argument("--models", nargs="+", choices=MODELS, default=list(MODELS))
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--allow-cpu", action="store_true", help="Testing only")
     args = parser.parse_args()
     pcl_types = normalise_point_cloud_types(args.pcl_types)
-    datasets = tuple(dict.fromkeys(args.datasets))
+    datasets = (normalise_dataset_selection(args.dataset),)
     models = tuple(dict.fromkeys(args.models))
     args.output.mkdir(parents=True, exist_ok=True)
+    if not args.resume:
+        (args.output / "winner.json").unlink(missing_ok=True)
 
     if not (args.processed_root / "manifest.json").is_file():
         raise FileNotFoundError(
@@ -581,26 +708,22 @@ def main() -> None:
         )
         if not len(validation_dataset) or not len(test_dataset):
             raise ValueError(
-                f"Stage 1 benchmark requires non-empty val and test splits for {dataset}"
+                f"Stage 1 Ablation 1 requires non-empty val and test splits for {dataset}"
             )
         expected_test_ids[dataset] = [
             test_dataset[index].plant_id for index in range(len(test_dataset))
         ]
     if not torch.cuda.is_available() and not args.allow_cpu:
-        raise RuntimeError("Stage 1 benchmark requires a CUDA GPU visible inside Docker")
+        raise RuntimeError("Stage 1 Ablation 1 requires a CUDA GPU visible inside Docker")
     if "sonata_ptv3" in models:
         verify_sonata_checkpoint("data/pretrained/sonata/sonata.pth")
     for model in models:
         ensure_backbone_available(model)
 
     runs = [(dataset, model) for dataset in datasets for model in models]
-    cross_datasets = (
-        tuple(dataset for dataset in SOURCE_DATASETS if dataset in datasets)
-        if "combined" in datasets
-        else ()
-    )
+    cross_datasets: tuple[str, ...] = ()
     cross_runs = [(dataset, model) for dataset in cross_datasets for model in models]
-    progress = BenchmarkProgress(
+    progress = Ablation1Progress(
         args.output / "progress.jsonl", len(runs) + len(cross_runs)
     )
     results: dict[str, dict[str, Any]] = {}
@@ -611,14 +734,15 @@ def main() -> None:
         key = _run_key(dataset, model)
         model_output = args.output / dataset / model
         complete_path = model_output / "run_complete.json"
-        if complete_path.is_file():
+        if args.resume and complete_path.is_file():
             result = _read_json(complete_path)
-            if _recorded_pcl_types(result) != pcl_types:
-                raise ValueError(
-                    f"{model_output} contains point-cloud views "
-                    f"{_recorded_pcl_types(result)!r}; choose a separate --output for "
-                    f"{pcl_types!r}"
-                )
+            _require_ablation_1_record(
+                result,
+                dataset=dataset,
+                model=model,
+                pcl_types=pcl_types,
+                checkpoint=model_output / "best.ckpt",
+            )
             results[key] = result
             progress.emit(
                 run_index,
@@ -636,12 +760,13 @@ def main() -> None:
             checkpoint = model_output / "best.ckpt"
             if args.resume and training_marker.is_file():
                 marker = _read_json(training_marker)
-                if _recorded_pcl_types(marker) != pcl_types:
-                    raise ValueError(
-                        f"{model_output} contains point-cloud views "
-                        f"{_recorded_pcl_types(marker)!r}; choose a separate --output for "
-                        f"{pcl_types!r}"
-                    )
+                _require_ablation_1_record(
+                    marker,
+                    dataset=dataset,
+                    model=model,
+                    pcl_types=pcl_types,
+                    checkpoint=checkpoint,
+                )
             if not (args.resume and training_marker.is_file() and checkpoint.is_file()):
                 progress.emit(
                     run_index,
@@ -691,7 +816,10 @@ def main() -> None:
                     json.dumps(
                         {
                             "status": "complete",
+                            "dataset": dataset,
+                            "model": model,
                             "checkpoint": str(checkpoint),
+                            "checkpoint_sha256": checkpoint_sha256(checkpoint),
                             "pcl_types": list(pcl_types),
                         },
                         indent=2,
@@ -714,7 +842,14 @@ def main() -> None:
             for split_index, (split, destination) in enumerate(
                 (("val", validation_path), ("test", test_path)), start=1
             ):
-                if not (args.resume and destination.is_file()):
+                if args.resume and destination.is_file():
+                    _require_evaluation_report(
+                        _read_json(destination),
+                        dataset=dataset,
+                        pcl_types=pcl_types,
+                        checkpoint=checkpoint,
+                    )
+                else:
                     _run(
                         [
                             sys.executable,
@@ -745,10 +880,14 @@ def main() -> None:
                 )
 
             visual_output = model_output / "test_visualizations"
+            best_checkpoint_sha256 = checkpoint_sha256(checkpoint)
             if not (
                 args.resume
                 and _visualizations_complete(
-                    visual_output, expected_test_ids[dataset], pcl_types
+                    visual_output,
+                    expected_test_ids[dataset],
+                    pcl_types,
+                    best_checkpoint_sha256,
                 )
             ):
                 progress.emit(
@@ -800,7 +939,10 @@ def main() -> None:
                     visual_event,
                 )
             if not _visualizations_complete(
-                visual_output, expected_test_ids[dataset], pcl_types
+                visual_output,
+                expected_test_ids[dataset],
+                pcl_types,
+                best_checkpoint_sha256,
             ):
                 raise RuntimeError("test visualization manifest is incomplete")
 
@@ -811,6 +953,7 @@ def main() -> None:
                 "model": model,
                 "pcl_types": list(pcl_types),
                 "checkpoint": str(checkpoint),
+                "checkpoint_sha256": best_checkpoint_sha256,
                 "training": training,
                 "validation": _read_json(validation_path),
                 "test": _read_json(test_path),
@@ -831,7 +974,7 @@ def main() -> None:
                 status="complete",
                 validation_overall_score=val_score,
             )
-        except Exception as exc:  # keep independent benchmark runs progressing
+        except Exception as exc:  # keep independent Ablation 1 runs progressing
             failures += 1
             result = {
                 "status": "failed",
@@ -993,12 +1136,11 @@ def main() -> None:
         models=models,
     )
     if failures:
-        raise SystemExit(f"Stage 1 benchmark completed with {failures} failed run(s)")
+        raise SystemExit(f"Stage 1 Ablation 1 completed with {failures} failed run(s)")
     report = _read_json(args.output / "comparison.json")
     print(
-        "Stage 1 benchmark complete; "
-        f"combined validation winner: {report['combined_winner']}; "
-        f"cross-dataset mean winner: {report['aggregate_winner']}",
+        "Stage 1 Ablation 1 complete; "
+        f"validation winner: {report['aggregate_winner']}",
         flush=True,
     )
 

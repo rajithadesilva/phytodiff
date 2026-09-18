@@ -2,7 +2,7 @@ stage: joint
 experiment: combined_stage1_K256
 model:
   encoder:
-    checkpoint: outputs/stage1_benchmark/combined/kpconvx/best.ckpt
+    checkpoint: outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
   diffusion:
     checkpoint: outputs/diffusion/best.ckpt
   graph:

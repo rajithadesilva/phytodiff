@@ -25,7 +25,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(cfg.model.encoder.junction_threshold_multiplier, 2.0)
         self.assertEqual(
             cfg.model.encoder.checkpoint,
-            "outputs/stage1_benchmark/combined/kpconvx/best.ckpt",
+            "outputs/stage1_ablation_1/combined/kpconvx/best.ckpt",
         )
         self.assertEqual(cfg.data.dataset, "combined")
         self.assertEqual(list(cfg.data.pcl_types), ["full"])
@@ -45,7 +45,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(diffusion_cfg.model.encoder.name, "kpconvx")
         self.assertEqual(
             diffusion_cfg.model.encoder.checkpoint,
-            "outputs/stage1_benchmark/combined/kpconvx/best.ckpt",
+            "outputs/stage1_ablation_1/combined/kpconvx/best.ckpt",
         )
 
     def test_stage1_registry_has_only_supported_models(self) -> None:

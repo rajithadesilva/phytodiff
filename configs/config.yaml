@@ -14,7 +14,7 @@ model:
     skeleton_threshold_m: 0.01
     junction_threshold_multiplier: 2.0
     pretrained_checkpoint: null
-    checkpoint: outputs/stage1_benchmark/combined/kpconvx/best.ckpt
+    checkpoint: outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
     grid_size: 0.005
     shell_sizes: [1, 14, 28]
     layer_blocks: [2, 2, 2, 8, 2]

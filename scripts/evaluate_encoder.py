@@ -11,7 +11,9 @@ import torch
 from omegaconf import OmegaConf
 
 from tomato_recon.data.processed import (
+    POINT_CLOUD_TYPES,
     normalise_dataset_selection,
+    normalise_point_cloud_types,
     processed_dataset_compatibility,
 )
 from tomato_recon.evaluation.encoder import evaluate_encoder_model
@@ -25,6 +27,27 @@ from tomato_recon.train.common import (
 )
 
 
+def resolve_evaluation_point_cloud_types(
+    training_pcl_types: tuple[str, ...],
+    requested_pcl_types: list[str] | None,
+    *,
+    allow_mismatch: bool,
+) -> tuple[str, ...]:
+    """Resolve evaluation views without weakening ordinary checkpoint validation."""
+    evaluation_pcl_types = (
+        training_pcl_types
+        if requested_pcl_types is None
+        else normalise_point_cloud_types(requested_pcl_types)
+    )
+    if evaluation_pcl_types != training_pcl_types and not allow_mismatch:
+        raise ValueError(
+            "evaluation point-cloud types differ from checkpoint training types: "
+            f"training={training_pcl_types!r}, evaluation={evaluation_pcl_types!r}; "
+            "pass --allow-pcl-type-mismatch only for a controlled cross-view evaluation"
+        )
+    return evaluation_pcl_types
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -33,6 +56,17 @@ def main() -> None:
     parser.add_argument(
         "--dataset",
         help="Source dataset ID, or 'combined'; defaults to the checkpoint selection",
+    )
+    parser.add_argument(
+        "--pcl-types",
+        nargs="+",
+        choices=POINT_CLOUD_TYPES,
+        help="Ordered evaluation views; defaults to the checkpoint training views",
+    )
+    parser.add_argument(
+        "--allow-pcl-type-mismatch",
+        action="store_true",
+        help="Allow evaluation views to differ from the checkpoint training views",
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -43,6 +77,12 @@ def main() -> None:
         raise ValueError(f"expected encoder checkpoint, found {payload.get('stage')!r}")
     cfg = OmegaConf.create(payload["config"])
     cfg.data.processed_root = str(args.processed_root)
+    training_pcl_types = selected_point_cloud_types(cfg)
+    evaluation_pcl_types = resolve_evaluation_point_cloud_types(
+        training_pcl_types,
+        args.pcl_types,
+        allow_mismatch=args.allow_pcl_type_mismatch,
+    )
     training_dataset = normalise_dataset_selection(
         cfg.data.get("dataset", "combined")
     )
@@ -50,6 +90,7 @@ def main() -> None:
         args.dataset or training_dataset
     )
     cfg.data.dataset = dataset_selection
+    cfg.data.pcl_types = list(evaluation_pcl_types)
     cfg.trainer.batch_size = 1
     cfg.trainer.num_workers = 0
     cfg.trainer.fast_dev_run = False
@@ -67,7 +108,7 @@ def main() -> None:
         expected_dataset_compatibility=processed_dataset_compatibility(
             args.processed_root, dataset_selection
         ),
-        expected_pcl_types=selected_point_cloud_types(cfg),
+        expected_pcl_types=training_pcl_types,
         allow_dataset_subset=True,
         expected_max_nodes=len(first.node_xyz),
     )
@@ -92,11 +133,13 @@ def main() -> None:
         "schema_version": "1.0",
         "split": args.split,
         "training_dataset": training_dataset,
+        "training_pcl_types": list(training_pcl_types),
         "dataset": dataset_selection,
         "evaluation_dataset": dataset_selection,
-        "pcl_types": list(selected_point_cloud_types(cfg)),
+        "pcl_types": list(evaluation_pcl_types),
+        "evaluation_pcl_types": list(evaluation_pcl_types),
         "view_sample_counts": {
-            view: len(dataset.full_dataset) for view in selected_point_cloud_types(cfg)
+            view: len(dataset.full_dataset) for view in evaluation_pcl_types
         },
         "sample_count": len(dataset),
         "checkpoint": str(args.checkpoint),

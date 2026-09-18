@@ -275,35 +275,45 @@ and a cached validation prediction under the selected output directory. `best.ck
 selected by the weighted validation overall score; test plants are never loaded by
 training.
 
-The former Stage 1 ablation is now the Stage 1 benchmark. It trains all three encoders
-on each individual dataset and on the combined dataset: 12 independent training runs.
-Each combined-trained checkpoint is then evaluated separately on TomatoWUR, TomatoPGT,
-and Pheno4D, adding nine evaluation-only runs without retraining.
+Stage 1 has two complementary ablations. Ablation 1 compares all three encoder
+architectures on one source-dataset selection and one ordered point-cloud configuration.
+The default uses all sources and the full point cloud:
 
 ```bash
-make stage1-benchmark
-make stage1-benchmark STAGE1_BENCHMARK_RESUME=--resume
-make stage1-benchmark STAGE1_TRAIN_PCL_TYPES="full top_down side" \
-  STAGE1_BENCHMARK_OUTPUT=outputs/stage1_benchmark_all_views
+make stage1-ablation-1
+make stage1-ablation-1 STAGE1_ABLATION1_RESUME=--resume
+make stage1-ablation-1 STAGE1_ABLATION1_PCL_TYPES="full top_down side" \
+  STAGE1_ABLATION1_OUTPUT=outputs/stage1_ablation_1_all_views
 ```
 
-Completed `run_complete.json` entries are always skipped. Therefore, rerunning the first
-command after completing the original 12-run benchmark performs only the new per-source
-evaluations. Use the second command when an unfinished training run should resume from
-its `last.ckpt`.
+Results are written to `outputs/stage1_ablation_1/<dataset>/<model>/`. The root
+comparison files report validation rankings and held-out test metrics. `winner.json`
+records the validation winner and is the input contract for Ablation 2. Run a subset
+directly with `--models`, or choose a source using `--dataset`:
 
-Results are written to `outputs/stage1_benchmark/<dataset>/<model>/`. The root
-`comparison.json`, `comparison.csv`, and `comparison.md` report every validation and
-held-out test metric, per-dataset rankings/winners, the combined-dataset winner, and
-the cross-dataset mean validation ranking. They also report each combined-trained model
-on each individual source; the corresponding raw metrics are stored under
-`combined/<model>/by_dataset/<dataset>/`. `overall_scores.png` compares matched training
-runs, `combined_models_by_dataset.png` compares the new per-source evaluations, and
-`progress.jsonl` is the durable live-progress record. To run a subset directly, pass for
-example `--datasets pheno4d combined --models kpconvx pointnext` to
-`scripts/run_stage1_benchmark.py`.
+```bash
+python scripts/run_stage1_ablation_1.py --dataset pheno4d \
+  --pcl-types full side --models kpconvx pointnext
+```
 
-To render the combined KPConvX benchmark test set again:
+Ablation 2 reads the Ablation 1 winner, retrains that architecture on every nonempty
+combination of `full`, `top_down`, and `side`, and evaluates all seven checkpoints on
+all seven held-out test configurations. This produces 49 test cells without using test
+results for model or epoch selection:
+
+```bash
+make stage1-ablation-2
+make stage1-ablation-2 STAGE1_ABLATION2_RESUME=--resume
+```
+
+Outputs are written under `outputs/stage1_ablation_2/`. `matrix.json`, `matrix.csv`, and
+`matrix.md` contain the complete results. Five `matrix_*.png` heatmaps cover semantic
+mIoU, skeleton F1, centreline-offset score, junction F1, and weighted overall score.
+Rows are training configurations and columns are test configurations. Pair and triple
+configurations pool their selected views as separate samples. Both ablations run in the
+Docker training service and require a visible CUDA GPU.
+
+To render the combined KPConvX Ablation 1 test set again:
 
 ```bash
 make visualize-stage1-test
@@ -312,7 +322,7 @@ make visualize-stage1-test STAGE1_PCL_TYPES="full top_down side"
 ```
 
 Expected: six-panel prediction/target previews and test metrics in
-`outputs/stage1_benchmark/combined/kpconvx/test_visualizations` for the default
+`outputs/stage1_ablation_1/combined/kpconvx/test_visualizations` for the default
 single `[full]` view. A single derived view keeps the existing suffixed directory
 behavior. Multiple views write `full/`, `top_down/`, and `side/` subdirectories
 plus root metrics and a summary manifest. Both commands run in Docker;
@@ -332,8 +342,8 @@ Prerequisite: Stage 1 checkpoint and prediction file.
 
 ```bash
 python scripts/cache_stage_predictions.py --stage encoder \
-  --checkpoint outputs/stage1_benchmark/combined/kpconvx/best.ckpt \
-  --input outputs/stage1_benchmark/combined/kpconvx/smoke_predictions.pt \
+  --checkpoint outputs/stage1_ablation_1/combined/kpconvx/best.ckpt \
+  --input outputs/stage1_ablation_1/combined/kpconvx/smoke_predictions.pt \
   --output outputs/cache/encoder
 python -c "import json; print(json.load(open('outputs/cache/encoder/manifest.json')))"
 ```
@@ -348,7 +358,7 @@ Prerequisite: Stage 1 best checkpoint and matching preprocessing hash/K.
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_diffusion --config-name diffusion \
   data.dataset=combined \
-  model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt
+  model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
 python -c "import torch; p=torch.load('outputs/diffusion/smoke_predictions.pt', weights_only=False); print(p['valid_mask'].sum(dim=1), p['confidence'].mean())"
 ```
 
@@ -375,7 +385,7 @@ Prerequisite: encoder/diffusion checkpoints. The curriculum starts on ground-tru
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_graph --config-name graph \
   data.dataset=combined \
-  model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt \
+  model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt \
   model.diffusion.checkpoint=outputs/diffusion/best.ckpt
 python -c "import json; g=json.load(open('outputs/graph/smoke_graph.json')); print(g['root_node_id'], len(g['nodes']), len(g['edges']))"
 ```
@@ -403,7 +413,7 @@ Prerequisite: best checkpoints from Stages 1–4 with matching preprocessing has
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_joint --config-name joint \
   data.dataset=combined \
-  model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt \
+  model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt \
   model.diffusion.checkpoint=outputs/diffusion/best.ckpt \
   model.graph.checkpoint=outputs/graph/best.ckpt \
   model.parametric.checkpoint=outputs/parametric/best.ckpt
@@ -461,7 +471,7 @@ Prerequisite: the frozen run, metrics, and validation reports.
 
 ```bash
 tar -czf outputs/combined_experiment_archive.tar.gz \
-  configs outputs/stage1_benchmark outputs/encoder outputs/diffusion outputs/graph outputs/parametric \
+  configs outputs/stage1_ablation_1 outputs/stage1_ablation_2 outputs/encoder outputs/diffusion outputs/graph outputs/parametric \
   outputs/joint outputs/evaluation outputs/inference
 tar -tzf outputs/combined_experiment_archive.tar.gz | head
 ```

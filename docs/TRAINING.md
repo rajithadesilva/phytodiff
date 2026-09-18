@@ -52,12 +52,15 @@ docker compose -f docker/docker-compose.yml run --rm train \
   --output outputs/encoder/combined/test_visualizations
 ```
 
-Run the complete 12-training-run model-by-dataset benchmark, live global progress,
-held-out evaluation, and all test-plant visualizations with `make stage1-benchmark`.
-The combined-trained checkpoint for each model is additionally evaluated on each of the
-three source datasets. Completed runs are skipped automatically, so an existing benchmark
-only performs missing evaluations. Reports are written as JSON, CSV, Markdown, and charts
-under `outputs/stage1_benchmark/`.
+Run the three-model architecture comparison, live global progress, held-out evaluation,
+and all test-plant visualizations with `make stage1-ablation-1`. It uses one source
+selection and one ordered point-cloud view array. Reports and the validation-selected
+`winner.json` are written under `outputs/stage1_ablation_1/`.
+
+Run `make stage1-ablation-2` after Ablation 1. It retrains the winning architecture on
+all seven nonempty combinations of `full`, `top_down`, and `side`, then evaluates the
+seven checkpoints on all seven test configurations. The 49-cell JSON/CSV/Markdown
+reports and five task heatmaps are written under `outputs/stage1_ablation_2/`.
 
 Each plant PNG contains six front-view panels: input RGB, ground-truth semantics, predicted semantics, ground-truth skeleton, predicted skeleton probability with offset-corrected centreline points, and predicted junction probability. Cyan rings in the junction panel mark ground-truth junctions. The command defaults to `test` and writes `metrics.json` for the selected plants. Use `--plant-id PLANT_ID` (repeatable) to select exact plants, `--count 0` for all 5 test plants, or `--device cpu` to disable GPU inference. Run this only after model selection is complete.
 
@@ -68,14 +71,14 @@ or repeatedly choose models using test results.
 ## 6. Cache encoder predictions
 
 - Prerequisite: Stage 1 output.
-- Command: `python scripts/cache_stage_predictions.py --stage encoder --checkpoint outputs/stage1_benchmark/combined/kpconvx/best.ckpt --input outputs/stage1_benchmark/combined/kpconvx/smoke_predictions.pt --output outputs/cache/encoder`.
+- Command: `python scripts/cache_stage_predictions.py --stage encoder --checkpoint outputs/stage1_ablation_1/combined/kpconvx/best.ckpt --input outputs/stage1_ablation_1/combined/kpconvx/smoke_predictions.pt --output outputs/cache/encoder`.
 - Expected: prediction file plus a manifest tied to its checkpoint SHA-256.
 - Verify: recalculate or inspect both hashes in `outputs/cache/encoder/manifest.json`.
 
 ## 7. Train Stage 2 diffusion
 
 - Prerequisite: compatible encoder checkpoint.
-- Command: `python -m tomato_recon.train.train_diffusion --config-name diffusion data.dataset=combined model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt`.
+- Command: `python -m tomato_recon.train.train_diffusion --config-name diffusion data.dataset=combined model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt`.
 - Expected: `outputs/diffusion/best.ckpt`, component losses, and predicted fixed-K node sets.
 - Verify: inspect denoising/existence/flow/duplicate/bounds losses, retained counts, confidence, and unit/zero parent-flow norms.
 
@@ -89,7 +92,7 @@ or repeatedly choose models using test results.
 ## 9. Train Stage 3 graph
 
 - Prerequisite: encoder and diffusion checkpoints/predictions.
-- Command: `python -m tomato_recon.train.train_graph --config-name graph data.dataset=combined model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt model.diffusion.checkpoint=outputs/diffusion/best.ckpt`.
+- Command: `python -m tomato_recon.train.train_graph --config-name graph data.dataset=combined model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt model.diffusion.checkpoint=outputs/diffusion/best.ckpt`.
 - Expected: `outputs/graph/best.ckpt` and `smoke_graph.json`; the curriculum moves from clean ground-truth nodes through perturbed/predicted-node conditions.
 - Verify: one root, one connected component, zero cycles, `edges = nodes - 1`, valid types, and a continuous main-stem path.
 
@@ -103,7 +106,7 @@ or repeatedly choose models using test results.
 ## 11. Joint fine-tune
 
 - Prerequisite: compatible best checkpoints from Stages 1–4.
-- Command: `python -m tomato_recon.train.train_joint --config-name joint data.dataset=combined model.encoder.checkpoint=outputs/stage1_benchmark/combined/kpconvx/best.ckpt model.diffusion.checkpoint=outputs/diffusion/best.ckpt model.graph.checkpoint=outputs/graph/best.ckpt model.parametric.checkpoint=outputs/parametric/best.ckpt`.
+- Command: `python -m tomato_recon.train.train_joint --config-name joint data.dataset=combined model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt model.diffusion.checkpoint=outputs/diffusion/best.ckpt model.graph.checkpoint=outputs/graph/best.ckpt model.parametric.checkpoint=outputs/parametric/best.ckpt`.
 - Expected: `outputs/joint/best.ckpt`, upstream checkpoint hashes, `staged_validation.json`, component metrics, and `smoke_visibility_weights.pt`.
 - Verify: inspect occlusion-aware geometry, normal, skeleton, parameter, and radius losses; confirm the discrete decoder has no gradient and the conservative learning rate is resolved.
 
@@ -131,7 +134,7 @@ or repeatedly choose models using test results.
 ## 15. Archive the run
 
 - Prerequisite: final metrics and validation.
-- Command: `tar -czf outputs/combined_experiment_archive.tar.gz configs outputs/stage1_benchmark outputs/encoder outputs/diffusion outputs/graph outputs/parametric outputs/joint outputs/evaluation outputs/inference`.
+- Command: `tar -czf outputs/combined_experiment_archive.tar.gz configs outputs/stage1_ablation_1 outputs/stage1_ablation_2 outputs/encoder outputs/diffusion outputs/graph outputs/parametric outputs/joint outputs/evaluation outputs/inference`.
 - Expected: configs, environment/git state, container digest record, manifests/splits, seeds, checkpoint dependencies, metrics, and per-sample predictions.
 - Verify: inspect with `tar -tzf ...`; keep the archive, data, weights, and secrets outside git.
 

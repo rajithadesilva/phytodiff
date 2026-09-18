@@ -29,9 +29,9 @@ from tomato_recon.train.common import (
 )
 
 
-def _benchmark_event(**values: object) -> None:
-    if os.environ.get("STAGE1_BENCHMARK_EVENTS") == "1":
-        print("@@STAGE1_BENCHMARK_EVENT@@" + json.dumps(values, sort_keys=True), flush=True)
+def _ablation_event(**values: object) -> None:
+    if os.environ.get("STAGE1_ABLATION_EVENTS") == "1":
+        print("@@STAGE1_ABLATION_EVENT@@" + json.dumps(values, sort_keys=True), flush=True)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> None:
                 epoch=epoch,
                 metrics=metrics,
             )
-        _benchmark_event(
+        _ablation_event(
             phase="train",
             epoch=epoch + 1,
             epoch_total=epoch_total,

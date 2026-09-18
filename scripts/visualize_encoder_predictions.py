@@ -441,9 +441,9 @@ def _run_view(
             )
             current = event_offset + index
             print(f"[{current}/{event_total}] wrote {output_path}", flush=True)
-            if os.environ.get("STAGE1_BENCHMARK_EVENTS") == "1":
+            if os.environ.get("STAGE1_ABLATION_EVENTS") == "1":
                 print(
-                    "@@STAGE1_BENCHMARK_EVENT@@"
+                    "@@STAGE1_ABLATION_EVENT@@"
                     + json.dumps(
                         {
                             "phase": "visualize",
@@ -485,7 +485,7 @@ def main() -> None:
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        default=Path("outputs/stage1_benchmark/combined/kpconvx/best.ckpt"),
+        default=Path("outputs/stage1_ablation_1/combined/kpconvx/best.ckpt"),
     )
     parser.add_argument(
         "--processed-root",
@@ -527,7 +527,7 @@ def main() -> None:
     if args.output is None:
         suffix = f"_{pcl_types[0]}" if len(pcl_types) == 1 and pcl_types[0] != "full" else ""
         args.output = Path(
-            f"outputs/stage1_benchmark/combined/kpconvx/test_visualizations{suffix}"
+            f"outputs/stage1_ablation_1/combined/kpconvx/test_visualizations{suffix}"
         )
 
     if not 0 <= args.probability_threshold <= 1:
