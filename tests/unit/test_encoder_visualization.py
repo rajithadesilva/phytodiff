@@ -187,7 +187,7 @@ class EncoderVisualizationTests(unittest.TestCase):
         self.assertEqual(colours.shape, (5, 3))
         torch.testing.assert_close(colours[0], torch.tensor([48, 18, 59], dtype=torch.uint8))
         torch.testing.assert_close(colours[-1], torch.tensor([122, 4, 3], dtype=torch.uint8))
-        self.assertEqual(JUNCTION_MARKER_RADIUS, 3 * SKELETON_NODE_RADIUS)
+        self.assertEqual(JUNCTION_MARKER_RADIUS, 2 * SKELETON_NODE_RADIUS)
 
     def test_predicted_junction_clustering_uses_weighted_centroids(self) -> None:
         xyz = torch.tensor(
