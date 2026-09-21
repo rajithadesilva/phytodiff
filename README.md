@@ -275,13 +275,14 @@ and a cached validation prediction under the selected output directory. `best.ck
 selected by the weighted validation overall score; test plants are never loaded by
 training.
 
-Stage 1 has two complementary ablations. Ablation 1 compares all three encoder
+Stage 1 has three complementary ablations. Ablation 1 compares all three encoder
 architectures on one source-dataset selection and one ordered point-cloud configuration.
 The default uses all sources and the full point cloud:
 
 ```bash
 make stage1-ablation-1
 make stage1-ablation-1 STAGE1_ABLATION1_RESUME=--resume
+make stage1-ablation-1 STAGE1_ABLATION_BATCH_SIZE=2
 make stage1-ablation-1 STAGE1_ABLATION1_PCL_TYPES="full top_down side" \
   STAGE1_ABLATION1_OUTPUT=outputs/stage1_ablation_1_all_views
 ```
@@ -304,14 +305,15 @@ results for model or epoch selection:
 ```bash
 make stage1-ablation-2
 make stage1-ablation-2 STAGE1_ABLATION2_RESUME=--resume
+make stage1-ablation-2 STAGE1_ABLATION_BATCH_SIZE=2
 ```
 
 Outputs are written under `outputs/stage1_ablation_2/`. `matrix.json`, `matrix.csv`, and
 `matrix.md` contain the complete results. Five `matrix_*.png` heatmaps cover semantic
 mIoU, skeleton F1, centreline-offset score, junction F1, and weighted overall score.
 Rows are training configurations and columns are test configurations. Pair and triple
-configurations pool their selected views as separate samples. Both ablations run in the
-Docker training service and require a visible CUDA GPU.
+configurations pool their selected views as separate samples. All Stage 1 ablations run
+in the Docker training service and require a visible CUDA GPU.
 
 Ablation 3 measures cross-dataset generalization with the default KPConvX encoder. It
 trains four checkpoints using `full`, `top_down`, and `side` as separate samples: one
@@ -323,13 +325,13 @@ test results are never used for selection:
 ```bash
 make stage1-ablation-3
 make stage1-ablation-3 STAGE1_ABLATION3_RESUME=--resume
-make stage1-ablation-3 STAGE1_ABLATION3_BATCH_SIZE=2
+make stage1-ablation-3 STAGE1_ABLATION_BATCH_SIZE=2
 ```
 
-The training batch size defaults to `1`, matching the other Stage 1 ablations. Larger
-batches are supported, but mixed view batches are padded to their largest point cloud,
-increase GPU memory use, and change the number of optimizer updates. Use the same batch
-size for every row of a comparison. Test evaluation remains at batch size `1`.
+All three Stage 1 ablations use the shared `STAGE1_ABLATION_BATCH_SIZE` setting, which
+defaults to `1`. Larger batches are supported, but mixed view batches are padded to their
+largest point cloud, increase GPU memory use, and change the number of optimizer updates.
+Use the same value when invoking each ablation. Test evaluation remains at batch size `1`.
 
 Outputs are written under `outputs/stage1_ablation_3/`. Training checkpoints live at
 `<training_dataset>/best.ckpt`; individual test results live at

@@ -72,6 +72,7 @@ def test_ablation_1_winner_is_required_and_validated(tmp_path: Path) -> None:
     assert winner["model"] == "kpconvx"
     assert winner["dataset"] == "combined"
     assert winner["pcl_types"] == ["full"]
+    assert winner["batch_size"] == 1
 
 
 def test_resume_records_require_exact_views_and_checkpoint_checksum(
@@ -101,6 +102,15 @@ def test_resume_records_require_exact_views_and_checkpoint_checksum(
             dataset="combined",
             pcl_types=("side", "full"),
             checkpoint=checkpoint,
+        )
+    with pytest.raises(ValueError, match="stale"):
+        _require_training_marker(
+            training_marker,
+            model="kpconvx",
+            dataset="combined",
+            pcl_types=("full", "side"),
+            checkpoint=checkpoint,
+            batch_size=2,
         )
 
     evaluation_marker = {
@@ -182,6 +192,7 @@ def test_ablation_2_writes_complete_7_by_7_reports_and_task_plots(
     report = json.loads((tmp_path / "matrix.json").read_text())
     assert len(report["configuration_order"]) == 7
     assert len(report["evaluations"]) == 49
+    assert report["batch_size"] == 1
     assert report["test_used_for_selection"] is False
     for metric, _ in MATRIX_METRICS:
         assert len(report["matrices"][metric]) == 7

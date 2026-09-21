@@ -12,6 +12,7 @@ DATASET_VIS_ELEVATION_DEG ?= 15
 
 STAGE1_CHECKPOINT ?= outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
 STAGE1_PROCESSED_ROOT ?= data/dataset
+STAGE1_ABLATION_BATCH_SIZE ?= 1
 # Point-cloud types: full, top_down, side. Use a space-separated ordered list.
 # Example: STAGE1_PCL_TYPES= full top_down side for Stage 1 visualization.
 STAGE1_PCL_TYPES ?= full top_down side
@@ -25,7 +26,6 @@ STAGE1_ABLATION2_OUTPUT ?= outputs/stage1_ablation_2
 STAGE1_ABLATION2_ABLATION1_OUTPUT ?= $(STAGE1_ABLATION1_OUTPUT)
 STAGE1_ABLATION2_RESUME ?=
 STAGE1_ABLATION3_OUTPUT ?= outputs/stage1_ablation_3
-STAGE1_ABLATION3_BATCH_SIZE ?= 1
 STAGE1_ABLATION3_RESUME ?=
 STAGE1_EPOCHS ?= 50
 
@@ -77,7 +77,8 @@ stage1-ablation-1:
 		--output $(STAGE1_ABLATION1_OUTPUT) \
 		--dataset $(STAGE1_ABLATION1_DATASET) \
 		--pcl-types $(STAGE1_ABLATION1_PCL_TYPES) \
-		--max-epochs $(STAGE1_EPOCHS) $(STAGE1_ABLATION1_RESUME)
+		--max-epochs $(STAGE1_EPOCHS) \
+		--batch-size $(STAGE1_ABLATION_BATCH_SIZE) $(STAGE1_ABLATION1_RESUME)
 
 stage1-ablation-2:
 	docker compose -f docker/docker-compose.yml run --rm train \
@@ -85,7 +86,8 @@ stage1-ablation-2:
 		--processed-root $(STAGE1_PROCESSED_ROOT) \
 		--ablation-1-output $(STAGE1_ABLATION2_ABLATION1_OUTPUT) \
 		--output $(STAGE1_ABLATION2_OUTPUT) \
-		--max-epochs $(STAGE1_EPOCHS) $(STAGE1_ABLATION2_RESUME)
+		--max-epochs $(STAGE1_EPOCHS) \
+		--batch-size $(STAGE1_ABLATION_BATCH_SIZE) $(STAGE1_ABLATION2_RESUME)
 
 stage1-ablation-3:
 	docker compose -f docker/docker-compose.yml run --rm train \
@@ -93,7 +95,7 @@ stage1-ablation-3:
 		--processed-root $(STAGE1_PROCESSED_ROOT) \
 		--output $(STAGE1_ABLATION3_OUTPUT) \
 		--max-epochs $(STAGE1_EPOCHS) \
-		--batch-size $(STAGE1_ABLATION3_BATCH_SIZE) $(STAGE1_ABLATION3_RESUME)
+		--batch-size $(STAGE1_ABLATION_BATCH_SIZE) $(STAGE1_ABLATION3_RESUME)
 
 visualize-stage1-test:
 	docker compose -f docker/docker-compose.yml run --rm train \

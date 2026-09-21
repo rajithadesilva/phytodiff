@@ -18,9 +18,21 @@ import torch
 from PIL import Image, ImageDraw
 
 if __package__:
-    from scripts.run_stage1_ablation_1 import _pcl_types_override, _read_json, _run
+    from scripts.run_stage1_ablation_1 import (
+        _pcl_types_override,
+        _read_json,
+        _recorded_batch_size,
+        _require_encoder_resume_checkpoint,
+        _run,
+    )
 else:
-    from run_stage1_ablation_1 import _pcl_types_override, _read_json, _run
+    from run_stage1_ablation_1 import (
+        _pcl_types_override,
+        _read_json,
+        _recorded_batch_size,
+        _require_encoder_resume_checkpoint,
+        _run,
+    )
 from tomato_recon.data.processed import (
     ProcessedPlantDataset,
     normalise_dataset_selection,
@@ -167,6 +179,7 @@ def load_ablation_1_winner(output: Path) -> dict[str, Any]:
         "model": model,
         "dataset": dataset,
         "pcl_types": list(pcl_types),
+        "batch_size": _recorded_batch_size(winner),
         "winner_record": str(winner_path),
     }
 
@@ -178,13 +191,18 @@ def _require_training_marker(
     dataset: str,
     pcl_types: tuple[str, ...],
     checkpoint: Path,
+    batch_size: int = 1,
 ) -> None:
     expected = {
         "model": model,
         "dataset": dataset,
         "pcl_types": list(pcl_types),
+        "batch_size": batch_size,
     }
-    actual = {key: marker.get(key) for key in expected}
+    actual = {
+        **{key: marker.get(key) for key in expected if key != "batch_size"},
+        "batch_size": _recorded_batch_size(marker),
+    }
     if marker.get("status") != "complete" or actual != expected:
         raise ValueError(
             f"stale Ablation 2 training record at {checkpoint.parent}: "
@@ -205,6 +223,7 @@ def _require_evaluation_marker(
     training_pcl_types: tuple[str, ...],
     evaluation_pcl_types: tuple[str, ...],
     checkpoint_sha256: str,
+    batch_size: int = 1,
 ) -> None:
     expected = {
         "model": model,
@@ -212,8 +231,12 @@ def _require_evaluation_marker(
         "training_pcl_types": list(training_pcl_types),
         "evaluation_pcl_types": list(evaluation_pcl_types),
         "checkpoint_sha256": checkpoint_sha256,
+        "batch_size": batch_size,
     }
-    actual = {key: marker.get(key) for key in expected}
+    actual = {
+        **{key: marker.get(key) for key in expected if key != "batch_size"},
+        "batch_size": _recorded_batch_size(marker),
+    }
     if marker.get("status") != "complete" or actual != expected:
         raise ValueError(
             "stale Ablation 2 evaluation record: "
@@ -320,6 +343,7 @@ def write_ablation_2_report(
     winner: dict[str, Any],
     training_results: dict[str, dict[str, Any]],
     evaluations: dict[str, dict[str, Any]],
+    batch_size: int = 1,
 ) -> None:
     """Write complete machine-readable results and one heatmap per Stage 1 task."""
     matrices = {
@@ -330,6 +354,7 @@ def write_ablation_2_report(
         "experiment": "stage1_ablation_2",
         "model": winner["model"],
         "dataset": winner["dataset"],
+        "batch_size": batch_size,
         "ablation_1_winner": winner,
         "selection_split": "val",
         "evaluation_split": "test",
@@ -356,6 +381,7 @@ def write_ablation_2_report(
         "evaluation_pcl_types",
         "model",
         "dataset",
+        "batch_size",
         "status",
         "checkpoint",
         "checkpoint_sha256",
@@ -384,6 +410,7 @@ def write_ablation_2_report(
                         "evaluation_pcl_types": " ".join(evaluation_pcl_types),
                         "model": winner["model"],
                         "dataset": winner["dataset"],
+                        "batch_size": batch_size,
                         "status": result.get("status", "not_run"),
                         "checkpoint": result.get("checkpoint"),
                         "checkpoint_sha256": result.get("checkpoint_sha256"),
@@ -401,6 +428,7 @@ def write_ablation_2_report(
         "",
         f"Winning architecture from Ablation 1: `{winner['model']}`.",
         f"Source dataset selection: `{winner['dataset']}`.",
+        f"Training batch size: `{batch_size}`.",
         "Rows are checkpoint training configurations. Columns are held-out test "
         "configurations. Validation selects epochs; test results never select a model.",
     ]
@@ -438,12 +466,14 @@ def _training_result(
     pcl_types: tuple[str, ...],
     checkpoint: Path,
     metrics: dict[str, Any],
+    batch_size: int = 1,
 ) -> dict[str, Any]:
     return {
         "status": "complete",
         "model": model,
         "dataset": dataset,
         "pcl_types": list(pcl_types),
+        "batch_size": batch_size,
         "checkpoint": str(checkpoint),
         "checkpoint_sha256": _sha256(checkpoint),
         "training": metrics,
@@ -460,17 +490,26 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, default=Path("outputs/stage1_ablation_2"))
     parser.add_argument("--max-epochs", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--allow-cpu", action="store_true", help="Testing only")
     args = parser.parse_args()
 
     if args.max_epochs < 1:
         raise ValueError("--max-epochs must be positive")
+    if args.batch_size < 1:
+        raise ValueError("--batch-size must be positive")
     if not (args.processed_root / "manifest.json").is_file():
         raise FileNotFoundError(
             f"processed dataset missing at {args.processed_root}; run preprocessing first"
         )
     winner = load_ablation_1_winner(args.ablation_1_output)
+    if int(winner["batch_size"]) != args.batch_size:
+        raise ValueError(
+            "Ablation 2 batch size must match its Ablation 1 winner: "
+            f"winner={winner['batch_size']}, requested={args.batch_size}; "
+            "rerun Ablation 1 with the shared batch size"
+        )
     model = str(winner["model"])
     dataset = str(winner["dataset"])
     validation_dataset = ProcessedPlantDataset(
@@ -511,6 +550,7 @@ def main() -> None:
                     dataset=dataset,
                     pcl_types=pcl_types,
                     checkpoint=checkpoint,
+                    batch_size=args.batch_size,
                 )
                 training_results[training_key] = marker
                 progress.emit(
@@ -544,7 +584,7 @@ def main() -> None:
                 _pcl_types_override(pcl_types),
                 f"output.dir={run_output}",
                 f"trainer.max_epochs={args.max_epochs}",
-                "trainer.batch_size=1",
+                f"trainer.batch_size={args.batch_size}",
                 "trainer.num_workers=0",
                 "seed=42",
             ]
@@ -552,6 +592,14 @@ def main() -> None:
                 command.append("trainer.devices=0")
             last_checkpoint = run_output / "last.ckpt"
             if args.resume and last_checkpoint.is_file():
+                _require_encoder_resume_checkpoint(
+                    last_checkpoint,
+                    experiment="Ablation 2",
+                    model=model,
+                    dataset=dataset,
+                    pcl_types=pcl_types,
+                    batch_size=args.batch_size,
+                )
                 command.extend(["--resume", str(last_checkpoint)])
 
             def training_event(event: dict[str, Any]) -> None:
@@ -575,6 +623,7 @@ def main() -> None:
                 pcl_types=pcl_types,
                 checkpoint=checkpoint,
                 metrics=_read_json(run_output / "metrics.json"),
+                batch_size=args.batch_size,
             )
             complete_path.write_text(
                 json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -596,6 +645,7 @@ def main() -> None:
                 "model": model,
                 "dataset": dataset,
                 "pcl_types": list(pcl_types),
+                "batch_size": args.batch_size,
                 "error": f"{type(exc).__name__}: {exc}",
             }
             training_results[training_key] = result
@@ -629,6 +679,7 @@ def main() -> None:
                     "dataset": dataset,
                     "training_pcl_types": list(training_pcl_types),
                     "evaluation_pcl_types": list(evaluation_pcl_types),
+                    "batch_size": args.batch_size,
                     "error": "training checkpoint is unavailable",
                 }
                 evaluations[result_key] = result
@@ -664,6 +715,7 @@ def main() -> None:
                         training_pcl_types=training_pcl_types,
                         evaluation_pcl_types=evaluation_pcl_types,
                         checkpoint_sha256=checkpoint_sha256,
+                        batch_size=args.batch_size,
                     )
                     evaluations[result_key] = result
                     progress.emit(
@@ -714,6 +766,7 @@ def main() -> None:
                     "dataset": dataset,
                     "training_pcl_types": list(training_pcl_types),
                     "evaluation_pcl_types": list(evaluation_pcl_types),
+                    "batch_size": args.batch_size,
                     "checkpoint": str(checkpoint),
                     "checkpoint_sha256": checkpoint_sha256,
                     "sample_count": evaluation_report.get("sample_count"),
@@ -746,6 +799,7 @@ def main() -> None:
                     "dataset": dataset,
                     "training_pcl_types": list(training_pcl_types),
                     "evaluation_pcl_types": list(evaluation_pcl_types),
+                    "batch_size": args.batch_size,
                     "checkpoint": str(checkpoint),
                     "checkpoint_sha256": checkpoint_sha256,
                     "error": f"{type(exc).__name__}: {exc}",
@@ -771,6 +825,7 @@ def main() -> None:
         winner=winner,
         training_results=training_results,
         evaluations=evaluations,
+        batch_size=args.batch_size,
     )
     if failures:
         raise SystemExit(f"Stage 1 Ablation 2 completed with {failures} failed run(s)")

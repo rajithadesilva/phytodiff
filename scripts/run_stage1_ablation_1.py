@@ -127,6 +127,48 @@ def _recorded_pcl_types(values: dict[str, Any]) -> tuple[str, ...]:
     return normalise_point_cloud_types([values.get("pcl_type", "full")])
 
 
+def _recorded_batch_size(values: dict[str, Any]) -> int:
+    """Read batch metadata, treating legacy Ablation 1/2 records as batch size one."""
+    return int(values.get("batch_size", 1))
+
+
+def _require_encoder_resume_checkpoint(
+    checkpoint: Path,
+    *,
+    experiment: str,
+    model: str,
+    dataset: str,
+    pcl_types: tuple[str, ...],
+    batch_size: int,
+) -> None:
+    """Reject a partial encoder checkpoint from a different ablation setup."""
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    config = payload.get("config", {})
+    data = config.get("data", {}) if isinstance(config, dict) else {}
+    trainer = config.get("trainer", {}) if isinstance(config, dict) else {}
+    model_config = config.get("model", {}) if isinstance(config, dict) else {}
+    encoder = model_config.get("encoder", {}) if isinstance(model_config, dict) else {}
+    expected = {
+        "stage": "encoder",
+        "model": model,
+        "dataset": dataset,
+        "pcl_types": list(pcl_types),
+        "batch_size": batch_size,
+    }
+    actual = {
+        "stage": payload.get("stage"),
+        "model": encoder.get("name"),
+        "dataset": data.get("dataset"),
+        "pcl_types": data.get("pcl_types"),
+        "batch_size": trainer.get("batch_size"),
+    }
+    if actual != expected:
+        raise ValueError(
+            f"stale {experiment} resume checkpoint at {checkpoint}: "
+            f"expected {expected}, got {actual}"
+        )
+
+
 def _single_view_visualizations_complete(
     path: Path,
     expected_ids: list[str],
@@ -195,16 +237,19 @@ def _require_ablation_1_record(
     model: str,
     pcl_types: tuple[str, ...],
     checkpoint: Path,
+    batch_size: int = 1,
 ) -> None:
     expected = {
         "dataset": dataset,
         "model": model,
         "pcl_types": list(pcl_types),
+        "batch_size": batch_size,
     }
     actual = {
         "dataset": record.get("dataset"),
         "model": record.get("model"),
         "pcl_types": list(_recorded_pcl_types(record)),
+        "batch_size": _recorded_batch_size(record),
     }
     if record.get("status") != "complete" or actual != expected:
         raise ValueError(
@@ -289,6 +334,7 @@ def _write_comparison(
     *,
     datasets: tuple[str, ...] = DATASETS,
     models: tuple[str, ...] = MODELS,
+    batch_size: int = 1,
 ) -> None:
     combined_evaluations = combined_evaluations or {}
     dataset_reports: dict[str, dict[str, Any]] = {}
@@ -343,6 +389,7 @@ def _write_comparison(
     report = {
         "schema_version": "4.0",
         "experiment": "stage1_ablation_1",
+        "batch_size": batch_size,
         "pcl_types": list(
             next(
                 (
@@ -387,6 +434,7 @@ def _write_comparison(
             "test_used_for_selection": False,
             "dataset": winner_dataset,
             "pcl_types": list(_recorded_pcl_types(winner_result)),
+            "batch_size": batch_size,
             "model": winner_model,
             "checkpoint": winner_result["checkpoint"],
             "validation_overall_score": winner_result["validation"]["metrics"][
@@ -671,6 +719,7 @@ def main() -> None:
     parser.add_argument("--processed-root", type=Path, default=Path("data/dataset"))
     parser.add_argument("--output", type=Path, default=Path("outputs/stage1_ablation_1"))
     parser.add_argument("--max-epochs", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument(
         "--pcl-types",
         nargs="+",
@@ -687,6 +736,10 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--allow-cpu", action="store_true", help="Testing only")
     args = parser.parse_args()
+    if args.max_epochs < 1:
+        raise ValueError("--max-epochs must be positive")
+    if args.batch_size < 1:
+        raise ValueError("--batch-size must be positive")
     pcl_types = normalise_point_cloud_types(args.pcl_types)
     datasets = (normalise_dataset_selection(args.dataset),)
     models = tuple(dict.fromkeys(args.models))
@@ -742,6 +795,7 @@ def main() -> None:
                 model=model,
                 pcl_types=pcl_types,
                 checkpoint=model_output / "best.ckpt",
+                batch_size=args.batch_size,
             )
             results[key] = result
             progress.emit(
@@ -766,6 +820,7 @@ def main() -> None:
                     model=model,
                     pcl_types=pcl_types,
                     checkpoint=checkpoint,
+                    batch_size=args.batch_size,
                 )
             if not (args.resume and training_marker.is_file() and checkpoint.is_file()):
                 progress.emit(
@@ -788,14 +843,23 @@ def main() -> None:
                     _pcl_types_override(pcl_types),
                     f"output.dir={model_output}",
                     f"trainer.max_epochs={args.max_epochs}",
-                    "trainer.batch_size=1",
+                    f"trainer.batch_size={args.batch_size}",
                     "trainer.num_workers=0",
                     "seed=42",
                 ]
                 if args.allow_cpu:
                     command.append("trainer.devices=0")
                 if args.resume and (model_output / "last.ckpt").is_file():
-                    command.extend(["--resume", str(model_output / "last.ckpt")])
+                    last_checkpoint = model_output / "last.ckpt"
+                    _require_encoder_resume_checkpoint(
+                        last_checkpoint,
+                        experiment="Ablation 1",
+                        model=model,
+                        dataset=dataset,
+                        pcl_types=pcl_types,
+                        batch_size=args.batch_size,
+                    )
+                    command.extend(["--resume", str(last_checkpoint)])
 
                 def training_event(event: dict[str, Any]) -> None:
                     epoch = int(event["epoch"])
@@ -821,6 +885,7 @@ def main() -> None:
                             "checkpoint": str(checkpoint),
                             "checkpoint_sha256": checkpoint_sha256(checkpoint),
                             "pcl_types": list(pcl_types),
+                            "batch_size": args.batch_size,
                         },
                         indent=2,
                     )
@@ -952,6 +1017,7 @@ def main() -> None:
                 "dataset": dataset,
                 "model": model,
                 "pcl_types": list(pcl_types),
+                "batch_size": args.batch_size,
                 "checkpoint": str(checkpoint),
                 "checkpoint_sha256": best_checkpoint_sha256,
                 "training": training,
@@ -980,6 +1046,7 @@ def main() -> None:
                 "status": "failed",
                 "dataset": dataset,
                 "model": model,
+                "batch_size": args.batch_size,
                 "error": f"{type(exc).__name__}: {exc}",
             }
             results[key] = result
@@ -1002,6 +1069,7 @@ def main() -> None:
             combined_evaluations,
             datasets=datasets,
             models=models,
+            batch_size=args.batch_size,
         )
 
     for cross_index, (dataset, model) in enumerate(cross_runs, start=len(runs)):
@@ -1077,6 +1145,7 @@ def main() -> None:
                 "evaluation_dataset": dataset,
                 "model": model,
                 "pcl_types": list(pcl_types),
+                "batch_size": args.batch_size,
                 "checkpoint": str(checkpoint),
                 "training": combined_result.get("training", {}),
                 "validation": _read_json(validation_path),
@@ -1104,6 +1173,7 @@ def main() -> None:
                 "training_dataset": "combined",
                 "evaluation_dataset": dataset,
                 "model": model,
+                "batch_size": args.batch_size,
                 "error": f"{type(exc).__name__}: {exc}",
             }
             combined_evaluations[key] = result
@@ -1126,6 +1196,7 @@ def main() -> None:
             combined_evaluations,
             datasets=datasets,
             models=models,
+            batch_size=args.batch_size,
         )
 
     _write_comparison(
@@ -1134,6 +1205,7 @@ def main() -> None:
         combined_evaluations,
         datasets=datasets,
         models=models,
+        batch_size=args.batch_size,
     )
     if failures:
         raise SystemExit(f"Stage 1 Ablation 1 completed with {failures} failed run(s)")

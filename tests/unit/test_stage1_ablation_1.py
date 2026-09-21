@@ -141,6 +141,15 @@ def test_ablation_1_resume_record_requires_exact_configuration_and_checkpoint(
             pcl_types=("side", "full"),
             checkpoint=checkpoint,
         )
+    with pytest.raises(ValueError, match="stale"):
+        _require_ablation_1_record(
+            record,
+            dataset="combined",
+            model="kpconvx",
+            pcl_types=("full", "side"),
+            checkpoint=checkpoint,
+            batch_size=2,
+        )
 
 
 def test_multiview_visualization_completion_requires_every_ordered_view(
@@ -235,6 +244,7 @@ def test_comparison_outputs_rank_by_validation_and_link_visualizations() -> None
         report = json.loads((output / "comparison.json").read_text())
         assert report["combined_winner"] == "kpconvx"
         assert report["aggregate_winner"] == "kpconvx"
+        assert report["batch_size"] == 1
         assert report["datasets"]["pheno4d"]["winner"] == "kpconvx"
         assert (
             report["combined_models_by_dataset"]["kpconvx"]["pheno4d"]["status"]
@@ -244,6 +254,7 @@ def test_comparison_outputs_rank_by_validation_and_link_visualizations() -> None
         winner = json.loads((output / "winner.json").read_text())
         assert winner["model"] == "kpconvx"
         assert winner["dataset"] == "combined"
+        assert winner["batch_size"] == 1
         assert winner["selection_split"] == "val"
         assert winner["test_used_for_selection"] is False
         assert "combined/kpconvx/test_visualizations/" in (
