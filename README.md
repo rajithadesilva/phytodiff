@@ -313,6 +313,33 @@ Rows are training configurations and columns are test configurations. Pair and t
 configurations pool their selected views as separate samples. Both ablations run in the
 Docker training service and require a visible CUDA GPU.
 
+Ablation 3 measures cross-dataset generalization with the default KPConvX encoder. It
+trains four checkpoints using `full`, `top_down`, and `side` as separate samples: one
+checkpoint for each source dataset and one for their combined training split. Every
+checkpoint is then evaluated on the held-out test split for all four dataset selections,
+producing a 4-by-4 matrix. Validation from the training dataset selects each best epoch;
+test results are never used for selection:
+
+```bash
+make stage1-ablation-3
+make stage1-ablation-3 STAGE1_ABLATION3_RESUME=--resume
+make stage1-ablation-3 STAGE1_ABLATION3_BATCH_SIZE=2
+```
+
+The training batch size defaults to `1`, matching the other Stage 1 ablations. Larger
+batches are supported, but mixed view batches are padded to their largest point cloud,
+increase GPU memory use, and change the number of optimizer updates. Use the same batch
+size for every row of a comparison. Test evaluation remains at batch size `1`.
+
+Outputs are written under `outputs/stage1_ablation_3/`. Training checkpoints live at
+`<training_dataset>/best.ckpt`; individual test results live at
+`<training_dataset>/by_test_dataset/<evaluation_dataset>/test_metrics.json`.
+`matrix.json`, `matrix.csv`, and `matrix.md` contain all 16 cells, with rows denoting the
+training dataset and columns denoting the test dataset. Five `matrix_*.png` heatmaps use
+the same Stage 1 task metrics as Ablation 2. Cross-source checkpoint loading remains
+strict everywhere else; Ablation 3 explicitly enables the evaluator's controlled
+same-schema, same-layout dataset-mismatch mode for off-diagonal cells.
+
 To render the combined KPConvX Ablation 1 test set again:
 
 ```bash
@@ -477,7 +504,7 @@ Prerequisite: the frozen run, metrics, and validation reports.
 
 ```bash
 tar -czf outputs/combined_experiment_archive.tar.gz \
-  configs outputs/stage1_ablation_1 outputs/stage1_ablation_2 outputs/encoder outputs/diffusion outputs/graph outputs/parametric \
+  configs outputs/stage1_ablation_1 outputs/stage1_ablation_2 outputs/stage1_ablation_3 outputs/encoder outputs/diffusion outputs/graph outputs/parametric \
   outputs/joint outputs/evaluation outputs/inference
 tar -tzf outputs/combined_experiment_archive.tar.gz | head
 ```

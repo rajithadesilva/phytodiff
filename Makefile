@@ -1,4 +1,4 @@
-.PHONY: install test smoke docker-build preprocess generate-top-down generate-side visualize-dataset prepare-stage1-models stage1-ablation-1 stage1-ablation-2 visualize-stage1-test
+.PHONY: install test smoke docker-build preprocess generate-top-down generate-side visualize-dataset prepare-stage1-models stage1-ablation-1 stage1-ablation-2 stage1-ablation-3 visualize-stage1-test
 
 DATASET_ROOT ?= data/dataset
 TOP_DOWN_OCCLUSION_RADIUS_M ?= 0.003
@@ -24,6 +24,9 @@ STAGE1_ABLATION1_RESUME ?=
 STAGE1_ABLATION2_OUTPUT ?= outputs/stage1_ablation_2
 STAGE1_ABLATION2_ABLATION1_OUTPUT ?= $(STAGE1_ABLATION1_OUTPUT)
 STAGE1_ABLATION2_RESUME ?=
+STAGE1_ABLATION3_OUTPUT ?= outputs/stage1_ablation_3
+STAGE1_ABLATION3_BATCH_SIZE ?= 1
+STAGE1_ABLATION3_RESUME ?=
 STAGE1_EPOCHS ?= 50
 
 install:
@@ -83,6 +86,14 @@ stage1-ablation-2:
 		--ablation-1-output $(STAGE1_ABLATION2_ABLATION1_OUTPUT) \
 		--output $(STAGE1_ABLATION2_OUTPUT) \
 		--max-epochs $(STAGE1_EPOCHS) $(STAGE1_ABLATION2_RESUME)
+
+stage1-ablation-3:
+	docker compose -f docker/docker-compose.yml run --rm train \
+		python -u scripts/run_stage1_ablation_3.py \
+		--processed-root $(STAGE1_PROCESSED_ROOT) \
+		--output $(STAGE1_ABLATION3_OUTPUT) \
+		--max-epochs $(STAGE1_EPOCHS) \
+		--batch-size $(STAGE1_ABLATION3_BATCH_SIZE) $(STAGE1_ABLATION3_RESUME)
 
 visualize-stage1-test:
 	docker compose -f docker/docker-compose.yml run --rm train \

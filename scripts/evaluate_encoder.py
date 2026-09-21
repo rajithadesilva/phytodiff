@@ -68,6 +68,14 @@ def main() -> None:
         action="store_true",
         help="Allow evaluation views to differ from the checkpoint training views",
     )
+    parser.add_argument(
+        "--allow-dataset-mismatch",
+        action="store_true",
+        help=(
+            "Allow controlled cross-dataset evaluation when checkpoint and target "
+            "dataset contracts use the same schema and layout"
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     args = parser.parse_args()
@@ -110,6 +118,7 @@ def main() -> None:
         ),
         expected_pcl_types=training_pcl_types,
         allow_dataset_subset=True,
+        allow_dataset_mismatch=args.allow_dataset_mismatch,
         expected_max_nodes=len(first.node_xyz),
     )
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -138,6 +147,7 @@ def main() -> None:
         "evaluation_dataset": dataset_selection,
         "pcl_types": list(evaluation_pcl_types),
         "evaluation_pcl_types": list(evaluation_pcl_types),
+        "dataset_mismatch_allowed": bool(args.allow_dataset_mismatch),
         "view_sample_counts": {
             view: len(dataset.full_dataset) for view in evaluation_pcl_types
         },

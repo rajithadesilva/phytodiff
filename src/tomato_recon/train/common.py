@@ -296,6 +296,16 @@ def dataset_compatibility_contains(
     )
 
 
+def dataset_compatibility_layout_matches(
+    actual: dict[str, Any], expected: dict[str, Any]
+) -> bool:
+    """Return whether two dataset contracts share the same structural schema."""
+    return all(
+        field in actual and field in expected and actual[field] == expected[field]
+        for field in ("schema_version", "manifest_schema_version", "layout")
+    )
+
+
 def save_checkpoint(
     path: str | Path,
     *,
@@ -353,6 +363,7 @@ def load_checkpoint(
     expected_dataset_compatibility: dict[str, Any] | None = None,
     expected_pcl_types: tuple[str, ...] | list[str] | None = None,
     allow_dataset_subset: bool = False,
+    allow_dataset_mismatch: bool = False,
     expected_max_nodes: int | None = None,
     strict: bool = True,
 ) -> dict[str, Any]:
@@ -407,10 +418,20 @@ def load_checkpoint(
                     "legacy single-source preprocessing metadata"
                 )
         elif actual_signature != expected_signature and not (
-            allow_dataset_subset
-            and isinstance(actual_compatibility, dict)
-            and dataset_compatibility_contains(
-                actual_compatibility, expected_dataset_compatibility
+            isinstance(actual_compatibility, dict)
+            and (
+                (
+                    allow_dataset_subset
+                    and dataset_compatibility_contains(
+                        actual_compatibility, expected_dataset_compatibility
+                    )
+                )
+                or (
+                    allow_dataset_mismatch
+                    and dataset_compatibility_layout_matches(
+                        actual_compatibility, expected_dataset_compatibility
+                    )
+                )
             )
         ):
             raise ValueError(

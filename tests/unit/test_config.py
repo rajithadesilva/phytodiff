@@ -11,6 +11,7 @@ from tomato_recon.data.processed import make_tiny_sample
 from tomato_recon.models.encoders.registry import create_backbone, ensure_backbone_available, list_backbones
 from tomato_recon.train.common import (
     dataset_compatibility_contains,
+    dataset_compatibility_layout_matches,
     load_checkpoint,
     save_checkpoint,
 )
@@ -131,6 +132,31 @@ class ConfigurationTests(unittest.TestCase):
                 expected_dataset_compatibility=expected,
                 allow_dataset_subset=True,
             )
+            transfer_expected = {
+                **expected,
+                "datasets": {"foreign-source": ["foreign-hash"]},
+                "signature": "foreign-signature",
+            }
+            with self.assertRaisesRegex(ValueError, "dataset compatibility mismatch"):
+                load_checkpoint(
+                    path,
+                    model,
+                    expected_dataset_compatibility=transfer_expected,
+                )
+            load_checkpoint(
+                path,
+                model,
+                expected_dataset_compatibility=transfer_expected,
+                allow_dataset_mismatch=True,
+            )
+            incompatible_layout = {**transfer_expected, "layout": "different-layout"}
+            with self.assertRaisesRegex(ValueError, "dataset compatibility mismatch"):
+                load_checkpoint(
+                    path,
+                    model,
+                    expected_dataset_compatibility=incompatible_layout,
+                    allow_dataset_mismatch=True,
+                )
 
     def test_combined_checkpoint_compatibility_contains_source_evaluation(self) -> None:
         shared = {
@@ -151,6 +177,13 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(dataset_compatibility_contains(combined, pheno4d))
         self.assertFalse(dataset_compatibility_contains(pheno4d, combined))
         self.assertFalse(dataset_compatibility_contains(combined, wrong_pheno4d))
+        self.assertTrue(dataset_compatibility_layout_matches(combined, pheno4d))
+        self.assertFalse(
+            dataset_compatibility_layout_matches(
+                combined, {**pheno4d, "layout": "another-layout"}
+            )
+        )
+        self.assertFalse(dataset_compatibility_layout_matches({}, {}))
 
 
 if __name__ == "__main__":
