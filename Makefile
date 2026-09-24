@@ -1,4 +1,4 @@
-.PHONY: install test smoke docker-build preprocess generate-top-down generate-side visualize-dataset prepare-stage1-models stage1-ablation-1 stage1-ablation-2 stage1-ablation-3 visualize-stage1-test
+.PHONY: install test smoke docker-build preprocess generate-top-down generate-side visualize-dataset prepare-stage1-models stage1-ablation-1 stage1-ablation-2 stage1-ablation-3 visualize-stage1-test train-stage1 train-stage2 train-stage2-points train-stage2-points-stage1 visualize-stage2-test
 
 DATASET_ROOT ?= data/dataset
 TOP_DOWN_OCCLUSION_RADIUS_M ?= 0.003
@@ -10,13 +10,15 @@ DATASET_VIS_COUNT ?= 0
 DATASET_VIS_AZIMUTH_DEG ?= 35
 DATASET_VIS_ELEVATION_DEG ?= 15
 
-STAGE1_CHECKPOINT ?= outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
+STAGE1_TRAIN_OUTPUT ?= outputs/encoder/combined
+STAGE1_CHECKPOINT ?= $(STAGE1_TRAIN_OUTPUT)/best.ckpt
+STAGE1_TRAIN_RESUME ?=
 STAGE1_PROCESSED_ROOT ?= data/dataset
 STAGE1_ABLATION_BATCH_SIZE ?= 1
 # Point-cloud types: full, top_down, side. Use a space-separated ordered list.
 # Example: STAGE1_PCL_TYPES= full top_down side for Stage 1 visualization.
 STAGE1_PCL_TYPES ?= full top_down side
-STAGE1_VIS_OUTPUT ?= outputs/stage1_ablation_1/combined/kpconvx/test_visualizations$(if $(filter 1,$(words $(STAGE1_PCL_TYPES))),$(if $(filter full,$(STAGE1_PCL_TYPES)),,_$(firstword $(STAGE1_PCL_TYPES))),)
+STAGE1_VIS_OUTPUT ?= $(STAGE1_TRAIN_OUTPUT)/test_visualizations$(if $(filter 1,$(words $(STAGE1_PCL_TYPES))),$(if $(filter full,$(STAGE1_PCL_TYPES)),,_$(firstword $(STAGE1_PCL_TYPES))),)
 STAGE1_ABLATION1_OUTPUT ?= outputs/stage1_ablation_1
 STAGE1_ABLATION1_DATASET ?= combined
 # Command-line override: make stage1-ablation-1 STAGE1_ABLATION1_PCL_TYPES="full top_down side"
@@ -28,6 +30,14 @@ STAGE1_ABLATION2_RESUME ?=
 STAGE1_ABLATION3_OUTPUT ?= outputs/stage1_ablation_3
 STAGE1_ABLATION3_RESUME ?=
 STAGE1_EPOCHS ?= 50
+STAGE2_OUTPUT_ROOT ?= outputs/diffts
+STAGE2_EPOCHS ?= 200
+STAGE2_MAX_POINTS ?= 8192
+STAGE2_VIS_VARIANT ?= points
+STAGE2_VIS_VIEW ?= top_down
+STAGE2_VIS_STEPS ?= 12
+STAGE2_VIS_COUNT ?= 0
+STAGE2_VIS_OUTPUT ?= $(STAGE2_OUTPUT_ROOT)/$(STAGE2_VIS_VARIANT)/test_diffusion_frames
 
 install:
 	python -m pip install -e ".[dev]"
@@ -105,3 +115,38 @@ visualize-stage1-test:
 		--split test --dataset combined --count 0 \
 		--pcl-types $(STAGE1_PCL_TYPES) \
 		--output $(STAGE1_VIS_OUTPUT)
+
+train-stage1:
+	docker compose -f docker/docker-compose.yml run --rm train \
+		python -u -m tomato_recon.train.train_encoder --config-name encoder \
+		data.dataset=combined data.pcl_types=[full,top_down,side] \
+		output.dir=$(STAGE1_TRAIN_OUTPUT) trainer.max_epochs=$(STAGE1_EPOCHS) \
+		trainer.batch_size=$(STAGE1_ABLATION_BATCH_SIZE) $(STAGE1_TRAIN_RESUME)
+
+train-stage2-points:
+	docker compose -f docker/docker-compose.yml run --rm train \
+		python -u -m tomato_recon.train.train_diffusion \
+		model.diffusion.variant=points \
+		model.diffusion.max_points=$(STAGE2_MAX_POINTS) \
+		trainer.max_epochs=$(STAGE2_EPOCHS) \
+		output.dir=$(STAGE2_OUTPUT_ROOT)/points
+
+train-stage2-points-stage1:
+	docker compose -f docker/docker-compose.yml run --rm train \
+		python -u -m tomato_recon.train.train_diffusion \
+		model.diffusion.variant=points_stage1 \
+		model.encoder.checkpoint=$(STAGE1_CHECKPOINT) \
+		model.diffusion.max_points=$(STAGE2_MAX_POINTS) \
+		trainer.max_epochs=$(STAGE2_EPOCHS) \
+		output.dir=$(STAGE2_OUTPUT_ROOT)/points_stage1
+
+train-stage2:
+	$(MAKE) train-stage2-points
+	$(MAKE) train-stage2-points-stage1
+
+visualize-stage2-test:
+	docker compose -f docker/docker-compose.yml run --rm train \
+		python -u scripts/visualize_stage2_predictions.py \
+		--checkpoint $(STAGE2_OUTPUT_ROOT)/$(STAGE2_VIS_VARIANT)/best.ckpt \
+		--view $(STAGE2_VIS_VIEW) --steps $(STAGE2_VIS_STEPS) \
+		--count $(STAGE2_VIS_COUNT) --output $(STAGE2_VIS_OUTPUT)

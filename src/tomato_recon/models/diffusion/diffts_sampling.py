@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 import networkx as nx
@@ -82,7 +83,9 @@ def direction_mst(xyz: Tensor, flow: Tensor) -> tuple[Tensor, Tensor]:
 
 @torch.no_grad()
 def sample(model: DiffTSModel, condition: Condition, xyz: Tensor, *,
-           steps: int, guidance: float, seed: int, scheduler) -> DiffTSPrediction:
+           steps: int, guidance: float, seed: int, scheduler,
+           on_step: Callable[[int, int, Tensor], None] | None = None) -> DiffTSPrediction:
+    """Sample a skeleton; optionally report the initial state and each denoised state."""
     device = xyz.device
     count = int(condition.count_logits.argmax().item()) + 2
     count = max(2, min(model.max_nodes, count))
@@ -101,13 +104,17 @@ def sample(model: DiffTSModel, condition: Condition, xyz: Tensor, *,
         condition,
         sparse=condition.sparse.replace_feature(torch.zeros_like(condition.sparse.features)),
     )
-    for timestep in solver.timesteps:
+    if on_step is not None:
+        on_step(0, int(solver.timesteps[0].item()), initial + residual)
+    for step_index, timestep in enumerate(solver.timesteps, start=1):
         state = initial + residual
         time = timestep.reshape(1)
         cond_noise = model.denoise(state, time, condition)
         uncond_noise = model.denoise(state, time, empty)
         predicted_noise = uncond_noise + guidance * (cond_noise - uncond_noise)
         residual = solver.step(predicted_noise, timestep, residual, generator=generator).prev_sample
+        if on_step is not None:
+            on_step(step_index, int(timestep.item()), initial + residual)
     output = initial + residual
     flow = torch.nn.functional.normalize(output[:, 3:], dim=-1)
     parent, edges = direction_mst(output[:, :3], flow)

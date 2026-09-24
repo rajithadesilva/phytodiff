@@ -40,6 +40,7 @@ Every training stage reports epoch and batch progress, running component losses,
 - Supported encoders: `pointnext`, `sonata_ptv3`, and `kpconvx`.
 - Expected: the selected output directory contains `best.ckpt`, `last.ckpt`, metrics, run metadata, and `smoke_predictions.pt`. Training uses only `train`, validates on `val`, and selects `best.ckpt` by validation overall score.
 - Verify: inspect `val_semantic_miou`, validation skeleton precision/recall, centreline offset MAE, junction F1, and checkpoint stage/hash/K fields. The test split is not loaded during training or checkpoint selection.
+- Make target: `make train-stage1` trains KPConvX on the combined dataset with all three views and writes `outputs/encoder/combined/best.ckpt`. Set `STAGE1_EPOCHS` or `STAGE1_TRAIN_OUTPUT` to change the run; `STAGE1_CHECKPOINT` points to its best checkpoint for the Makefile Stage 2 feature variant.
 
 Visualise predictions from the trained Stage 1 checkpoint:
 
@@ -107,6 +108,8 @@ docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_diffusion model.diffusion.variant=points_stage1
 ```
 
+Use `make train-stage2` to run both variants in sequence, or `make train-stage2-points` and `make train-stage2-points-stage1` separately. The latter uses `STAGE1_CHECKPOINT` (by default, the output of `make train-stage1`). Set `STAGE2_MAX_POINTS` and `STAGE2_EPOCHS` for both Makefile runs.
+
 Outputs are `outputs/diffts/points/{best,last}.ckpt` and
 `outputs/diffts/points_stage1/{best,last}.ckpt`, with resolved configs and
 validation metrics in each directory. The default is 8,192 scan points,
@@ -145,6 +148,14 @@ docker compose -f docker/docker-compose.yml run --rm train \
   --checkpoint outputs/diffts/points_stage1/best.ckpt \
   --output outputs/diffts/points_stage1/test_top_down.json
 ```
+
+Visualise a short denoising sequence for every held-out test plant after training:
+
+```bash
+make visualize-stage2-test STAGE2_VIS_VARIANT=points STAGE2_VIS_STEPS=12
+```
+
+This uses the selected variant's best checkpoint and the top-down test view by default. Each plant gets `frame_000.png` (initial noisy nodes) and one PNG per denoising step under `outputs/diffts/<variant>/test_diffusion_frames/steps_012/<plant_id>/`. Each frame shows large front X-Z prediction and ground-truth skeleton panels over the input scan. Both panels use one fixed scale from that plant's input scan and GT, so denoising outliers cannot shrink the visible plant; the footer counts predicted nodes outside the view. A `manifest.json` records the checkpoint hash, plant IDs, frame paths, and timesteps. Set `STAGE2_VIS_COUNT=3` for a short preview, or `STAGE2_VIS_VIEW=side` for another view. The script also accepts repeatable `--plant-id` arguments to select exact test plants. The number of denoising steps controls the actual sampler, so short sequences are quick previews and can differ from the checkpoint's full 200-step prediction.
 
 ## 9. Infer a saved top-down view
 

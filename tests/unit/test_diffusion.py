@@ -4,6 +4,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -11,7 +13,10 @@ import torch
 from tomato_recon.config import load_config
 from tomato_recon.data.diffts import from_sample, load_top_down_input, rgb_available, sample_points
 from tomato_recon.data.processed import make_tiny_sample
-from tomato_recon.models.diffusion.diffts_sampling import create_scheduler, direction_mst, q_sample
+from tomato_recon.models.diffusion.diffts_model import Condition
+from tomato_recon.models.diffusion.diffts_sampling import (
+    create_scheduler, direction_mst, q_sample, sample,
+)
 from tomato_recon.models.diffusion.diffts_runtime import load_stage2_checkpoint, TRAIN_VIEWS
 from tomato_recon.models.diffusion.model import ConditionalSkeletonDenoiser
 
@@ -57,6 +62,47 @@ class DiffTSTests(unittest.TestCase):
         parents, edges = direction_mst(xyz, flow)
         self.assertEqual(parents.tolist(), [-1, 0, 1])
         self.assertEqual(edges.shape, (2, 2))
+
+    def test_sampling_callback_records_initial_and_each_denoising_state(self) -> None:
+        class Sparse:
+            features = torch.ones(2, 1)
+
+            def replace_feature(self, features):
+                result = Sparse()
+                result.features = features
+                return result
+
+        class TinyModel:
+            max_nodes = 2
+
+            def denoise(self, state, timestep, condition):
+                return torch.zeros_like(state)
+
+        class Solver:
+            config = SimpleNamespace(num_train_timesteps=10, beta_start=2e-6, beta_end=2e-4)
+            alphas_cumprod = torch.linspace(0.99, 0.9, 10)
+
+            def set_timesteps(self, steps, device):
+                self.timesteps = torch.tensor([9, 5, 0][:steps], device=device)
+
+            def step(self, predicted, timestep, residual, generator=None):
+                return SimpleNamespace(prev_sample=residual * 0.5)
+
+        condition = Condition(Sparse(), torch.zeros(3), 1.0, torch.tensor([1.0]))
+        xyz = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.1]])
+        captured = []
+        with patch("tomato_recon.models.diffusion.diffts_sampling.create_scheduler",
+                   return_value=Solver()):
+            prediction = sample(
+                TinyModel(), condition, xyz, steps=3, guidance=1.0, seed=7,
+                scheduler=Solver(),
+                on_step=lambda index, timestep, state: captured.append(
+                    (index, timestep, state.clone())
+                ),
+            )
+        self.assertEqual([row[0] for row in captured], [0, 1, 2, 3])
+        self.assertEqual([row[1] for row in captured], [9, 9, 5, 0])
+        torch.testing.assert_close(captured[-1][2][:, :3], prediction.node_xyz)
 
     def test_checkpoint_rejects_variant_and_stage1_mismatch(self) -> None:
         class TinyModel(torch.nn.Linear):
