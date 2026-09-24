@@ -9,14 +9,6 @@ model:
     name: pointnext
     output_dim: 32
     global_dim: 48
-  diffusion:
-    max_nodes: 16
-    hidden_dim: 32
-    layers: 1
-    heads: 4
-    local_neighbors: 4
-    train_timesteps: 20
-    sample_steps: 4
   graph:
     hidden_dim: 32
     knn_candidates: 4

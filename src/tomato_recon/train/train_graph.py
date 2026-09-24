@@ -55,6 +55,7 @@ def align_predicted_nodes(prediction: SkeletonPrediction, batch) -> tuple[torch.
 
 
 def main(argv: list[str] | None = None) -> None:
+    raise RuntimeError("Stages 3–5 await DiffTS stage 2 integration")
     cfg, known = load_config("graph", argv)
     seed_everything(int(cfg.seed), bool(cfg.trainer.deterministic))
     device = select_device(cfg)

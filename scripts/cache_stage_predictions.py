@@ -14,7 +14,7 @@ def sha256(path: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Version cached stage predictions")
-    parser.add_argument("--stage", required=True, choices=["encoder", "diffusion", "graph", "parametric"])
+    parser.add_argument("--stage", required=True, choices=["encoder", "graph", "parametric"])
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

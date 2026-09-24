@@ -1,6 +1,6 @@
 # Model contracts
 
-All stage boundaries use dataclasses in `tomato_recon.data.schemas`; disk formats remain plain, versioned JSON/NPZ/PT checkpoint structures.
+Stage 1 uses dataclasses in `tomato_recon.data.schemas`. DiffTS Stage 2 has its own target-free input and variable-length output contract; disk formats remain versioned JSON/NPZ/PT structures.
 
 ## `PlantSample`
 
@@ -12,9 +12,20 @@ All stage boundaries use dataclasses in `tomato_recon.data.schemas`; disk format
 
 The backbone returns per-input-point features, optional multiscale feature maps, and a global feature. `PointEncoder` adds semantic, skeleton, centreline-offset, and junction heads. Optional backbone packages are imported only after selection.
 
-## `SkeletonPrediction`
+## DiffTS Stage 2 prediction
 
-Diffusion returns fixed `[B,K,3]` position and normalized parent flow, `[B,K]` existence logits/confidence, and an inference-only NMS mask. Ground-truth count is not required. `sample_id` records stochastic samples.
+`DiffTSPrediction` contains `node_xyz [M,3]`, normalized `parent_flow [M,3]`,
+`parent_index [M]`, `edges [M-1,2]`, and `predicted_count=M` where
+`2 <= M <= 256`. The supervised count head determines M from conditioning
+features at inference; no target count is read. Direction-weighted skeleton
+postprocessing creates one rooted tree. Standalone inference writes these
+fields to `skeleton.json` and writes nodes and edges to `skeleton.ply`.
+
+The `points` conditioner accepts XYZ, RGB, and RGB availability. The
+`points_stage1` conditioner also accepts aligned point and global features
+from a frozen all-view KPConvX checkpoint. Training uses all three processed
+views and each plant's full skeleton; standalone inference accepts only a
+processed `top_down.npz` and does not open target fields.
 
 ## `PlantGraph`
 
@@ -26,8 +37,10 @@ JSON schema 1.0 records Z-up/metres, one root, typed/role/visibility/confidence 
 
 ## Checkpoints
 
-Each `best.ckpt` contains schema/stage/epoch, model and optimizer state, fully resolved
-configuration, label map, the selected source-to-preprocessing-hash compatibility map and
-signature, K, git commit/dirty flag, upstream checkpoint hashes, and metrics. A legacy
-single-source preprocessing hash is retained when unambiguous. Loading fails before state
-mutation when the dataset contract or K is incompatible.
+Each DiffTS `best.ckpt` stores schema `diffts-stage2-v1`, conditioning variant,
+resolved config, maximum count, all three training views, the combined dataset
+compatibility signature, source commit, metrics, and the exact Stage 1
+checkpoint hash when applicable. Loading rejects old Stage 2 checkpoints,
+variant, node-limit, dataset, and Stage 1 hash mismatches. Points and
+points_stage1 use separate checkpoint directories. Stages 3–5 await integration
+with this variable-length contract.

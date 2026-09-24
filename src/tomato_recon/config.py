@@ -88,9 +88,13 @@ def validate_config(cfg: DictConfig, stage: str | None = None) -> None:
     )
     if int(cfg.data.max_nodes) <= 1:
         raise ValueError("data.max_nodes must be greater than one")
-    diffusion_k = int(cfg.model.diffusion.max_nodes)
-    if diffusion_k != int(cfg.data.max_nodes):
-        raise ValueError("data.max_nodes and model.diffusion.max_nodes must match")
+    if stage == "diffusion":
+        if int(cfg.data.max_nodes) != 256:
+            raise ValueError("DiffTS stage 2 requires data.max_nodes=256")
+        if str(cfg.model.diffusion.variant) not in {"points", "points_stage1"}:
+            raise ValueError("DiffTS variant must be points or points_stage1")
+        if int(cfg.model.diffusion.max_points) < 2:
+            raise ValueError("DiffTS max_points must be at least two")
     if float(cfg.model.encoder.skeleton_threshold_m) <= 0:
         raise ValueError("model.encoder.skeleton_threshold_m must be positive")
     if float(cfg.model.encoder.junction_threshold_multiplier) <= 0:

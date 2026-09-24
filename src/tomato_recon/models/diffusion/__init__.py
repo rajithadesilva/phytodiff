@@ -1,6 +1,6 @@
-from tomato_recon.models.diffusion.model import ConditionalSkeletonDenoiser, DenoiserOutput
-from tomato_recon.models.diffusion.scheduler import DiffusionScheduler
-from tomato_recon.models.diffusion.sampling import sample_skeleton
+"""DiffTS stage 2 sparse diffusion model and inference."""
 
-__all__ = ["ConditionalSkeletonDenoiser", "DenoiserOutput", "DiffusionScheduler", "sample_skeleton"]
+from tomato_recon.models.diffusion.diffts_model import DiffTSModel
+from tomato_recon.models.diffusion.diffts_sampling import DiffTSPrediction, sample
 
+__all__ = ["DiffTSModel", "DiffTSPrediction", "sample"]

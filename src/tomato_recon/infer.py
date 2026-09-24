@@ -170,6 +170,7 @@ def write_inference_outputs(
 
 
 def main(argv: list[str] | None = None) -> None:
+    raise RuntimeError("Stages 3–5 await DiffTS stage 2 integration")
     cfg, _ = load_config("infer", argv)
     if not cfg.input.path:
         raise ValueError("set input.path to a processed sample .npz, raw .csv, or ASCII .ply")

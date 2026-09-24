@@ -1,14 +1,34 @@
 stage: diffusion
+# One checkpoint per conditioning variant: points or points_stage1.
+data:
+  dataset: combined
+  pcl_types: [full, top_down, side]
 model:
   encoder:
     checkpoint: outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
   diffusion:
-    checkpoint: null
-loss:
-  existence_weight: 1.0
-  confidence_weight: 0.25
-  flow_weight: 0.25
-  duplicate_weight: 0.1
-  bounds_weight: 0.05
+    variant: points
+    max_points: 8192
+    width_divisor: 2
+    condition_resolution: 0.001
+    node_resolution: 0.005
+    train_timesteps: 1000
+    beta_start: 0.000002
+    beta_end: 0.0002
+    sample_steps: 200
+    guidance: 2.0
+    uncond_probability: 0.1
+    regularization_weight: 5.0
+    count_loss_weight: 0.1
+trainer:
+  max_epochs: 200
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  batch_size: 1
+  gradient_accumulation: 4
+  mixed_precision: true
+  validation_interval: 5
+  early_stop_patience: 10
 output:
-  dir: outputs/diffusion
+  dir: outputs/diffts/${model.diffusion.variant}
+seed: 42

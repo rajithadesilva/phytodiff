@@ -77,6 +77,7 @@ def fitted_parameter_tensor(batch, device: torch.device) -> torch.Tensor:
 
 
 def main(argv: list[str] | None = None) -> None:
+    raise RuntimeError("Stages 3–5 await DiffTS stage 2 integration")
     cfg, known = load_config("parametric", argv)
     seed_everything(int(cfg.seed), bool(cfg.trainer.deterministic))
     device = select_device(cfg)

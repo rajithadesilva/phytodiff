@@ -1,43 +1,33 @@
-# Tomato parametric reconstruction
+# Tomato plant reconstruction: Stage 2 DiffTS
 
-This repository reconstructs one isolated tomato plant from a labelled or unlabelled 3D scan. The canonical output is a rooted, typed, attributed plant graph. A fixed-slot conditional diffusion model completes the centreline, a constrained arborescence decoder establishes biological topology, and differentiable PyTorch primitives generate editable stems, leaves, and confidence-supported optional fruit. Inference writes meshes, traits, uncertainty, and a metres/Z-up OpenUSD asset for NVIDIA Isaac Sim.
+This repository prepares tomato point clouds, trains a Stage 1 point encoder, and now trains two DiffTS Stage 2 skeleton models. The **points** variant conditions on XYZ and available RGB; **points_stage1** additionally uses frozen per-point and global features from the all-view Stage 1 checkpoint. Both infer skeleton nodes and parent directions from saved top-down point clouds. Stage 3 graph, Stage 4 parametric geometry, and Stage 5 joint inference commands currently report that DiffTS integration is pending.
 
-The implementation follows `papers/Tomato_Diffusion_Parametric_Reconstruction_Implementation_Spec.pdf`. TomatoWUR v3, TomatoPGT v1, and Pheno4D are external data: they are never downloaded by training code, copied into an image, or committed here.
+Stage 2 adapts the [DiffTS implementation](https://github.com/PRBonn/DiffTS/tree/a1b75f5c4804ac018c553dcc6cf9a78bd518d8e4) to the existing CUDA 12.1/spconv environment. The sparse U-Net, weighted scan-neighbour conditioning, six-channel noise prediction, classifier-free guidance, and DPM solver follow DiffTS; a supervised count head removes its evaluation-time dependence on target node counts. Ported code retains the upstream MIT attribution.
 
 ## What is implemented
 
-```text
-source dataset adapters -> deterministic canonical fixed-K cache -> point encoder
-    -> conditional skeleton diffusion -> typed nodes + sparse parent scores
-    -> constrained directed spanning tree -> organ parameters
-    -> differentiable geometry -> graph/PLY/traits/uncertainty/OpenUSD
-```
+- Processed TomatoWUR, TomatoPGT, and Pheno4D scans with full, top-down, and side views. Existing train/validation/test splits are preserved.
+- KPConvX, PointNeXt, and Sonata Stage 1 encoder training and checkpoint workflows.
+- Two separate DiffTS Stage 2 training and target-free top-down inference workflows, with saved XYZ/flow/tree outputs and source/view evaluation metrics.
+- Deferred Stage 3–5 entry points with an explicit integration error.
 
-- Typed contracts for samples, encoder output, skeleton predictions, graphs, organ parameters, geometry, and export reports.
-- Source-specific adapters for TomatoWUR v3, complete TomatoPGT v1 scans, and annotated Pheno4D tomato scans. Every point cloud becomes one globally numbered instance in the same flat `data/dataset/` directory.
-- Official TomatoWUR ground-truth skeleton preservation, TomatoPGT graph-path conversion, and deterministic Pheno4D centreline reconstruction from its manual stem/leaf instances.
-- KPConvX is the default Stage 1 backbone, with PointNeXt and Sonata-PTv3 available as explicit alternatives with actionable dependency/checkpoint errors.
-- Six-dimensional fixed-K diffusion over XYZ and parent flow, with existence/confidence heads, duplicate/bounds losses, FPS initialization, DDIM sampling, flow normalization, and NMS.
-- Separate organ/role/visibility heads, sparse k-nearest parent scoring, hard botanical masks, root selection, maximum directed spanning arborescence, and main-stem continuity.
-- Cubic spline, parallel-transport frames, tapered tube, leaf width-profile, and optional confidence-gated fruit geometry in PyTorch.
-- Independent training stages, resumable checkpoint contracts, resolved configs, git/environment capture, smoke fixtures, evaluation, inference, USD/USDA export, and static/optional Isaac validation.
+## Smoke test
 
-Fruit is a pseudo-labelled optional branch. It is confidence-gated and explicitly excluded from primary supervised metrics. The MVP does not implement plant dynamics, multi-plant row reconstruction, or future growth.
-
-## Local smoke test
-
-Python 3.11 is the validated interpreter. A CUDA GPU is optional for the tiny test fixture.
+The Stage 2 smoke run requires the prepared combined dataset, the all-view
+KPConvX Stage 1 checkpoint, and an NVIDIA GPU. It exercises both DiffTS
+variants at the production 8,192-point input size with short sampling. Run it
+in the training image:
 
 ```bash
-python -m pip install -e ".[dev]"
-bash scripts/smoke_test_all.sh
+docker compose -f docker/docker-compose.yml run --rm train bash scripts/smoke_test_all.sh
 ```
 
-The smoke configuration uses 64 points, K=16, and one forward/backward step per stage. It does not require TomatoWUR. Full settings live under `configs/`.
+For CPU-only unit tests in a local Python environment, install `.[dev]` and
+run `python -m pytest -q`.
 
 ## Required ordered training and execution procedure
 
-Run the following steps in this order. Each stage owns its checkpoint directory and can resume with `--resume PATH`.
+Run the following steps in order. Stage 1 and each DiffTS variant own separate checkpoint directories and accept `--resume PATH`.
 
 ### 1. Build the training image and verify GPU access
 
@@ -48,7 +38,7 @@ docker compose -f docker/docker-compose.yml build train
 docker compose -f docker/docker-compose.yml run --rm train python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-Expected: the cached multi-stage image builds and the check prints `True` for CUDA on a GPU host. Verify the resolved image digest with `docker image inspect tomato-parametric-reconstruction-train --format '{{json .RepoDigests}}'` and archive it in Step 15.
+Expected: the cached multi-stage image builds and the check prints `True` for CUDA on a GPU host. Verify the resolved image digest with `docker image inspect tomato-parametric-reconstruction-train --format '{{json .RepoDigests}}'` and archive it with the final run.
 
 ### 2. Mount the source datasets outside the image
 
@@ -385,152 +375,55 @@ python -c "import json; print(json.load(open('outputs/cache/encoder/manifest.jso
 
 Expected: a copied prediction cache plus checkpoint/prediction SHA-256 values. Verify the cache manifest before Stage 2.
 
-### 7. Train Stage 2: fixed-K skeleton diffusion
+### 7. Train Stage 2: DiffTS
 
-Prerequisite: Stage 1 best checkpoint and matching preprocessing hash/K.
+The default processed dataset has 92 training, 29 validation, and 42 test plants. Each training plant contributes full, top-down, and side inputs, for 276 training examples. Targets are the same existing full skeleton for each plant in every view. Run `python scripts/audit_diffts_data.py` to verify source alignment, split/view counts, and colour availability. TomatoWUR and TomatoPGT retain RGB; Pheno4D uses an explicit unavailable-colour flag. Checkpoint selection uses top-down validation skeleton Chamfer distance. The two runs use identical data, sampling, seeds, and DiffTS hyperparameters.
+
+```bash
+# Run a short CUDA check for both variants first.
+docker compose -f docker/docker-compose.yml run --rm train bash scripts/smoke_test_all.sh
+
+# Then train each variant to validation convergence.
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.train.train_diffusion model.diffusion.variant=points
+
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.train.train_diffusion model.diffusion.variant=points_stage1
+```
+
+Training writes separate `outputs/diffts/<variant>/best.ckpt` and `last.ckpt` files. The Stage 1 variant requires `outputs/stage1_ablation_1/combined/kpconvx/best.ckpt`, trained on `[full,top_down,side]`. The default uses 8,192 sampled conditioning points, batch size one, mixed precision, four-step gradient accumulation, a 200-epoch ceiling, validation every five epochs, and ten-validation patience. Resume with `--resume outputs/diffts/<variant>/last.ckpt`.
+
+### 8. Evaluate the held-out top-down views
 
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
-  python -m tomato_recon.train.train_diffusion --config-name diffusion \
-  data.dataset=combined \
-  model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
-python -c "import torch; p=torch.load('outputs/diffusion/smoke_predictions.pt', weights_only=False); print(p['valid_mask'].sum(dim=1), p['confidence'].mean())"
+  python -m tomato_recon.evaluate_diffts \
+  --checkpoint outputs/diffts/points/best.ckpt \
+  --output outputs/diffts/points/test_top_down.json
+
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.evaluate_diffts \
+  --checkpoint outputs/diffts/points_stage1/best.ckpt \
+  --output outputs/diffts/points_stage1/test_top_down.json
 ```
 
-Expected: `outputs/diffusion/best.ckpt` and sampled XYZ/flow/existence/confidence tensors. Verify retained-node counts, denoising metrics, normalized nonzero flow, and existence probabilities.
+Reports contain node and sampled-skeleton Chamfer distances, node-count error, and per-source summaries for all 42 held-out plants. Use `--split val --all-views` to inspect validation metrics for all three views.
 
-### 8. Cache diffusion predictions
-
-Prerequisite: Stage 2 outputs.
-
-```bash
-python scripts/cache_stage_predictions.py --stage diffusion \
-  --checkpoint outputs/diffusion/best.ckpt --input outputs/diffusion/smoke_predictions.pt \
-  --output outputs/cache/diffusion
-python -c "import json; print(json.load(open('outputs/cache/diffusion/manifest.json')))"
-```
-
-Expected: immutable train/validation diffusion predictions associated with one checkpoint hash. Do not mix predictions from incompatible K/preprocessing configurations.
-
-### 9. Train Stage 3: biological graph
-
-Prerequisite: encoder/diffusion checkpoints. The curriculum starts on ground-truth nodes, injects coordinate/flow noise, then accepts cached predicted-node experiments.
+### 9. Infer one saved top-down scan
 
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
-  python -m tomato_recon.train.train_graph --config-name graph \
-  data.dataset=combined \
-  model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt \
-  model.diffusion.checkpoint=outputs/diffusion/best.ckpt
-python -c "import json; g=json.load(open('outputs/graph/smoke_graph.json')); print(g['root_node_id'], len(g['nodes']), len(g['edges']))"
+  python -m tomato_recon.infer_diffts \
+  --checkpoint outputs/diffts/points/best.ckpt \
+  --input data/dataset/plant_000001/top_down.npz \
+  --output outputs/diffts/inference/plant_000001
 ```
 
-Expected: `outputs/graph/best.ckpt` and a typed rooted graph. Verify one root, `edges = nodes - 1`, no support pole, no cycle, one component, and main-stem continuity.
-
-### 10. Train Stage 4: parametric decoder
-
-Prerequisite: Stage 3 checkpoint and automatically fitted parameter targets.
-
-```bash
-docker compose -f docker/docker-compose.yml run --rm train \
-  python -m tomato_recon.train.train_parametric --config-name parametric \
-  model.graph.checkpoint=outputs/graph/best.ckpt
-python -c "import json; p=json.load(open('outputs/parametric/smoke_parameters.json')); print(len(p['organs']))"
-```
-
-Expected: `outputs/parametric/best.ckpt`, `smoke_parameters.json`, and `smoke_geometry.ply`. Verify finite vertices/faces, positive radii, attachment IDs, and fitted stem/leaf parameters.
-
-### 11. Run Stage 5 joint fine-tuning
-
-Prerequisite: best checkpoints from Stages 1–4 with matching preprocessing hashes and K.
-
-```bash
-docker compose -f docker/docker-compose.yml run --rm train \
-  python -m tomato_recon.train.train_joint --config-name joint \
-  data.dataset=combined \
-  model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt \
-  model.diffusion.checkpoint=outputs/diffusion/best.ckpt \
-  model.graph.checkpoint=outputs/graph/best.ckpt \
-  model.parametric.checkpoint=outputs/parametric/best.ckpt
-python -c "import torch; c=torch.load('outputs/joint/best.ckpt', map_location='cpu', weights_only=False); print(c['upstream_checkpoint_hashes'])"
-```
-
-Expected: `outputs/joint/best.ckpt` containing the combined model and exact upstream hashes, plus `staged_validation.json` and `smoke_visibility_weights.pt`. Verify the frozen staged pass, occlusion-aware geometry, normal, skeleton, parameter, and radius losses and `discrete_decode_gradient = 0`.
-
-### 12. Run frozen full test-set evaluation once
-
-Prerequisite: a frozen experiment config and test predictions; do not tune on this output.
-
-```bash
-python -m tomato_recon.evaluate --processed-root data/dataset \
-  --predictions outputs/inference --output outputs/evaluation/metrics.json
-python -c "import json; m=json.load(open('outputs/evaluation/metrics.json')); print(m['primary_metric_groups'], m['aggregate'])"
-```
-
-Expected: per-sample and aggregate skeleton/topology/trait metrics. Geometry (including normal consistency when normals are available) and optional fruit are reported in `secondary_aggregate`.
-
-### 13. Infer one sample and export all artifacts
-
-Prerequisite: Stage 5 checkpoint and a processed `.npz` (or isolated TomatoWUR-style CSV/ASCII PLY).
-
-```bash
-python -m tomato_recon.infer --config-name infer \
-  input.path=data/dataset/plant_000001/full.npz \
-  data.pcl_types=[full,top_down,side] \
-  model.pipeline_checkpoint=outputs/joint/best.ckpt \
-  inference.num_diffusion_samples=4 output.dir=outputs/inference/plant_000001
-test -f outputs/inference/plant_000001/inference_manifest.json
-```
-
-One selected view writes the existing output contract directly. Multiple views write
-one subdirectory per view and a root `inference_manifest.json`. A side run consumes
-only `side.npz` points while keeping the full target contract. Raw CSV/PLY input
-requires `data.pcl_types=[full]`. No ground-truth node count is used during inference.
-
-### 14. Validate USD statically and optionally in Isaac Sim
-
-Prerequisite: Step 13. Binary `.usd` requires the `usd-export` image/`usd` extra; without `pxr`, local export writes valid USDA text at the `.usd` path and reports the fallback.
-
-```bash
-docker compose -f docker/docker-compose.yml run --rm usd-export \
-  python -m tomato_recon.export.isaac_validate outputs/inference/PLANT_ID/plant.usd \
-  --report outputs/inference/PLANT_ID/static_validation.json
-docker compose -f docker/docker-compose.yml --profile isaac-validate run --rm isaac-validate
-```
-
-Expected: a valid `/World/TomatoPlant`, metres-per-unit 1.0, Z-up, non-empty meshes, skeleton curves, materials, and machine-readable validation. Optional rendering unavailability does not fail schema validation.
-
-### 15. Archive reproducibility artifacts
-
-Prerequisite: the frozen run, metrics, and validation reports.
-
-```bash
-tar -czf outputs/combined_experiment_archive.tar.gz \
-  configs outputs/stage1_ablation_1 outputs/stage1_ablation_2 outputs/stage1_ablation_3 outputs/encoder outputs/diffusion outputs/graph outputs/parametric \
-  outputs/joint outputs/evaluation outputs/inference
-tar -tzf outputs/combined_experiment_archive.tar.gz | head
-```
-
-Expected: resolved YAML, checkpoints and hashes, metrics, environment/git state, manifests/splits, per-sample predictions, USD reports, and the recorded container digest. Do not add the archive to git.
-
-## Inference output contract
-
-```text
-outputs/inference/<plant_id>/
-  input_normalised.ply       semantic_prediction.ply
-  skeleton_prediction.ply   skeleton_prediction.json
-  plant_graph.json           organ_parameters.json
-  reconstructed_mesh.ply    traits.json
-  uncertainty.json           plant.usd
-  plant_debug.usda           export_report.json
-  preview.png
-```
+Inference reads only the saved `top_down.npz` input and its metadata. It writes `skeleton.json` with predicted node count, XYZ, parent directions, and parent indices, plus `skeleton.ply` with tree edges. It never reads graph or node targets. A legacy Stage 2 checkpoint cannot load as a DiffTS checkpoint.
 
 ## Configuration and checkpoints
 
-All CLIs accept stable dot-list overrides after `--config-name` or `--config`. Every run records `resolved_config.yaml`, `environment.json`, and `git_state.json`. Checkpoints store model/optimizer state, stage, epoch, resolved config, label map, the selected dataset compatibility signature, K, git commit, metrics, and upstream checkpoint hashes. Loading fails on dataset/preprocessing-contract or K mismatches.
-
-See [data documentation](docs/DATA.md), [training details](docs/TRAINING.md), [model contracts](docs/MODEL_CONTRACTS.md), and [USD export](docs/USD_EXPORT.md).
+Stage 2 settings live in `configs/diffusion/default.yaml`. Each DiffTS checkpoint stores its variant, resolved config, full dataset compatibility signature, three training views, and, when applicable, the exact Stage 1 checkpoint hash. Loading rejects mismatches. The earlier Stage 2 and later-stage checkpoint formats are not compatible with this milestone.
 
 ## Tests
 
@@ -548,4 +441,4 @@ python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
-The suite covers data mapping/round trips/fixed-K reduction/hashes; spline, frames, stem, leaf, and fruit meshes; diffusion noising/loss/reverse sampling/pruning/determinism; candidate edges/constraints/arborescence; configuration/checkpoint compatibility; all five training scripts and resume; preprocessing-to-inference integration; and USD hierarchy/units/mesh metadata/reopen validation.
+The suite covers dataset contracts and hashes, Stage 1, DiffTS noising/sampling/count prediction/checkpoint compatibility, target-free top-down input loading, and existing geometry/export modules. GPU smoke runs exercise both DiffTS conditioning variants.

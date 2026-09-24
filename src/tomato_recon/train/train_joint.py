@@ -42,6 +42,7 @@ def _limit_rows(*values: torch.Tensor, limit: int) -> tuple[torch.Tensor, ...]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    raise RuntimeError("Stages 3–5 await DiffTS stage 2 integration")
     cfg, known = load_config("joint", argv)
     seed_everything(int(cfg.seed), bool(cfg.trainer.deterministic))
     device = select_device(cfg)

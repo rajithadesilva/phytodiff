@@ -4,7 +4,5 @@ data:
 model:
   encoder:
     checkpoint: outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
-  diffusion:
-    checkpoint: outputs/diffusion/best.ckpt
 output:
   dir: outputs/graph

@@ -24,20 +24,6 @@ model:
     neighbor_limits: [12, 16, 20, 20, 20]
     kernel_radius: 2.3
     attention_groups: 8
-  diffusion:
-    max_nodes: 256
-    hidden_dim: 128
-    layers: 3
-    heads: 4
-    local_neighbors: 16
-    train_timesteps: 1000
-    sample_steps: 50
-    scheduler: ddim
-    existence_threshold: 0.5
-    nms_distance_m: 0.006
-    min_nodes: 2
-    freeze_encoder: true
-    checkpoint: null
   graph:
     hidden_dim: 128
     knn_candidates: 12

@@ -85,77 +85,85 @@ or repeatedly choose models using test results.
 - Expected: prediction file plus a manifest tied to its checkpoint SHA-256.
 - Verify: recalculate or inspect both hashes in `outputs/cache/encoder/manifest.json`.
 
-## 7. Train Stage 2 diffusion
+## 7. Train both DiffTS Stage 2 variants
 
-- Prerequisite: compatible encoder checkpoint.
-- Command: `python -m tomato_recon.train.train_diffusion --config-name diffusion data.dataset=combined model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt`.
-- Expected: `outputs/diffusion/best.ckpt`, component losses, and predicted fixed-K node sets.
-- Verify: inspect denoising/existence/flow/duplicate/bounds losses, retained counts, confidence, and unit/zero parent-flow norms.
-
-## 8. Cache diffusion predictions
-
-- Prerequisite: Stage 2 output.
-- Command: `python scripts/cache_stage_predictions.py --stage diffusion --checkpoint outputs/diffusion/best.ckpt --input outputs/diffusion/smoke_predictions.pt --output outputs/cache/diffusion`.
-- Expected: immutable predictions tied to one diffusion checkpoint.
-- Verify: inspect `outputs/cache/diffusion/manifest.json`; never combine incompatible K or preprocessing hashes.
-
-## 9. Train Stage 3 graph
-
-- Prerequisite: encoder and diffusion checkpoints/predictions.
-- Command: `python -m tomato_recon.train.train_graph --config-name graph data.dataset=combined model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt model.diffusion.checkpoint=outputs/diffusion/best.ckpt`.
-- Expected: `outputs/graph/best.ckpt` and `smoke_graph.json`; the curriculum moves from clean ground-truth nodes through perturbed/predicted-node conditions.
-- Verify: one root, one connected component, zero cycles, `edges = nodes - 1`, valid types, and a continuous main-stem path.
-
-## 10. Train Stage 4 parametric decoder
-
-- Prerequisite: graph checkpoint and automatically fitted cache targets.
-- Command: `python -m tomato_recon.train.train_parametric --config-name parametric model.graph.checkpoint=outputs/graph/best.ckpt`.
-- Expected: `outputs/parametric/best.ckpt`, fitted parameter JSON, and geometry PLY.
-- Verify: positive radii, finite vertices, in-range triangle indices, valid attachment IDs, and non-empty stem/leaf meshes.
-
-## 11. Joint fine-tune
-
-- Prerequisite: compatible best checkpoints from Stages 1–4.
-- Command: `python -m tomato_recon.train.train_joint --config-name joint data.dataset=combined model.encoder.checkpoint=outputs/stage1_ablation_1/combined/kpconvx/best.ckpt model.diffusion.checkpoint=outputs/diffusion/best.ckpt model.graph.checkpoint=outputs/graph/best.ckpt model.parametric.checkpoint=outputs/parametric/best.ckpt`.
-- Expected: `outputs/joint/best.ckpt`, upstream checkpoint hashes, `staged_validation.json`, component metrics, and `smoke_visibility_weights.pt`.
-- Verify: inspect occlusion-aware geometry, normal, skeleton, parameter, and radius losses; confirm the discrete decoder has no gradient and the conservative learning rate is resolved.
-
-## 12. Evaluate the frozen test set once
-
-- Prerequisite: frozen experiment configuration and complete test predictions.
-- Command: `python -m tomato_recon.evaluate --processed-root data/dataset --predictions outputs/inference --output outputs/evaluation/metrics.json`.
-- Expected: per-sample/aggregate skeleton, topology, and trait results; geometry/fruit are in `secondary_aggregate`.
-- Verify: `primary_metric_groups` contains skeleton/topology/traits, geometry contains normal consistency when normals exist, and no test result was used for tuning.
-
-## 13. Infer one sample and export
-
-- Prerequisite: joint checkpoint and processed NPZ or isolated CSV/ASCII PLY.
-- Command: `python -m tomato_recon.infer --config-name infer input.path=data/dataset/plant_000001/full.npz model.pipeline_checkpoint=outputs/joint/best.ckpt inference.num_diffusion_samples=4 output.dir=outputs/inference/plant_000001`.
-- Expected: every file in the inference output contract, including graph, parameters, mesh, traits, uncertainty, preview, USD, and report.
-- Verify: open JSON/PLY outputs and check `export_report.json`; ground-truth node count is not read by sampling.
-
-## 14. Validate USD and optionally Isaac Sim
-
-- Prerequisite: Step 13.
-- Command: `python -m tomato_recon.export.isaac_validate outputs/inference/PLANT_ID/plant.usd --report outputs/inference/PLANT_ID/static_validation.json`; optionally run `docker compose -f docker/docker-compose.yml --profile isaac-validate run --rm isaac-validate`.
-- Expected: metres/Z-up, `/World/TomatoPlant`, valid meshes/materials/metadata, debug curves, and a machine-readable report.
-- Verify: report `valid=true`; optional rendering absence is not a schema failure.
-
-## 15. Archive the run
-
-- Prerequisite: final metrics and validation.
-- Command: `tar -czf outputs/combined_experiment_archive.tar.gz configs outputs/stage1_ablation_1 outputs/stage1_ablation_2 outputs/encoder outputs/diffusion outputs/graph outputs/parametric outputs/joint outputs/evaluation outputs/inference`.
-- Expected: configs, environment/git state, container digest record, manifests/splits, seeds, checkpoint dependencies, metrics, and per-sample predictions.
-- Verify: inspect with `tar -tzf ...`; keep the archive, data, weights, and secrets outside git.
-
-## Smoke and resume
-
-Every stage accepts the dedicated tiny configuration:
+Stage 2 uses the prepared combined dataset: 92 training plants × 3 views, 29
+validation plants × 3 views, and 42 held-out test plants. Each training view
+uses the same existing full skeleton target for its plant; only the input point
+cloud changes. Verify all partial-view source hashes, split/view counts, RGB
+availability, and target-free partial-view files with
+`python scripts/audit_diffts_data.py`. The report is saved to
+`outputs/diffts/data_audit.json`. Checkpoint selection uses the 29
+validation top-down views and skeleton Chamfer distance. The points variant
+uses XYZ, RGB, and an RGB availability flag. The points_stage1 variant adds
+frozen per-point and global features from the all-view KPConvX Stage 1
+checkpoint. Stage 1 weights do not update during Stage 2 training.
 
 ```bash
-python -m tomato_recon.train.train_encoder --config configs/smoke/all.yaml
-python -m tomato_recon.train.train_encoder --config configs/smoke/all.yaml \
-  --resume outputs/smoke/encoder/best.ckpt
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.train.train_diffusion model.diffusion.variant=points
+
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.train.train_diffusion model.diffusion.variant=points_stage1
 ```
 
-`trainer.fast_dev_run=true` performs one forward/backward step. Normal configurations iterate `trainer.max_epochs` across the processed split with deterministic shuffling.
+Outputs are `outputs/diffts/points/{best,last}.ckpt` and
+`outputs/diffts/points_stage1/{best,last}.ckpt`, with resolved configs and
+validation metrics in each directory. The default is 8,192 scan points,
+batch size one, mixed precision, accumulation of four, a half-width sparse
+network, 200 epochs maximum, validation every five epochs, and patience of
+ten validation checks. Use `model.diffusion.max_points=4096` for both runs
+if the 8 GB GPU preflight cannot accommodate 8,192 points.
+
+A short preflight for either variant is:
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.train.train_diffusion \
+  model.diffusion.variant=points trainer.fast_dev_run=true \
+  model.diffusion.sample_steps=4 output.dir=outputs/diffts/preflight_points
+```
+
+Replace `points` with `points_stage1` and use a separate output directory for
+the second preflight. Inspect finite training losses, a 2–256 node prediction,
+and readable JSON/PLY inference output before production training.
+
+## 8. Evaluate both frozen checkpoints
+
+Evaluate each best checkpoint once on the 42 held-out top-down views after
+validation-based model selection. Reports include node Chamfer, skeleton
+Chamfer, and count absolute error overall and by source/view.
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.evaluate_diffts \
+  --checkpoint outputs/diffts/points/best.ckpt \
+  --output outputs/diffts/points/test_top_down.json
+
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.evaluate_diffts \
+  --checkpoint outputs/diffts/points_stage1/best.ckpt \
+  --output outputs/diffts/points_stage1/test_top_down.json
+```
+
+## 9. Infer a saved top-down view
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm train \
+  python -m tomato_recon.infer_diffts \
+  --checkpoint outputs/diffts/points/best.ckpt \
+  --input data/dataset/plant_000001/top_down.npz \
+  --output outputs/diffts/inference/plant_000001
+```
+
+The standalone loader accepts only processed `top_down.npz` inputs and reads
+point/view/colour metadata. It does not open the skeleton targets. It writes
+`skeleton.json` with predicted count, variable-length XYZ, parent directions,
+parent indices, and edges, plus a skeleton PLY. Checkpoint loading rejects
+old Stage 2 files, variant mismatches, preprocessing mismatches, and Stage 1
+checkpoint hash mismatches.
+
+## Later stages
+
+Stages 3–5 and the old joint inference command report that DiffTS integration
+is pending. Their former fixed-slot checkpoint paths are retired.
