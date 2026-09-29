@@ -14,8 +14,8 @@ from tomato_recon.config import load_config, save_resolved_config
 from tomato_recon.data.diffts import augment_z, from_sample, sample_points
 from tomato_recon.data.processed import PointCloudViewDataset, processed_dataset_compatibility
 from tomato_recon.models.diffusion.diffts_runtime import (
-    TRAIN_VIEWS, create_model, load_frozen_stage1, load_stage2_checkpoint,
-    save_stage2_checkpoint, stage1_features,
+    TRAIN_VIEWS, create_model, create_stage1_backbone, load_stage2_checkpoint,
+    require_stage2_schema, save_stage2_checkpoint, set_stage1_frozen, stage1_features,
 )
 from tomato_recon.models.diffusion.diffts_sampling import (
     create_scheduler, node_chamfer, q_sample, sample, skeleton_chamfer,
@@ -35,19 +35,19 @@ def _loader(cfg, split: str, *, shuffle: bool):
                       num_workers=int(cfg.trainer.num_workers), collate_fn=_single)
 
 
-def _condition(model, encoder, data):
+def _condition(model, backbone, data, *, frozen: bool):
     with torch.cuda.amp.autocast(enabled=False):
-        point_features, global_features = stage1_features(encoder, data)
-    if encoder is not None and data.xyz.is_cuda:
-        torch.cuda.empty_cache()
+        point_features, global_features = stage1_features(backbone, data, frozen=frozen)
     return model.encode_condition(
         data.xyz, data.rgb, data.rgb_available, point_features, global_features
     )
 
 
 @torch.no_grad()
-def validate(model, encoder, cfg, loader, *, max_samples: int | None = None) -> dict:
+def validate(model, backbone, cfg, loader, *, max_samples: int | None = None) -> dict:
     model.eval()
+    if backbone is not None:
+        backbone.eval()
     solver = create_scheduler(
         int(cfg.model.diffusion.train_timesteps),
         float(cfg.model.diffusion.beta_start),
@@ -62,7 +62,7 @@ def validate(model, encoder, cfg, loader, *, max_samples: int | None = None) -> 
             continue  # Top-down drives checkpoint selection.
         data = sample_points(from_sample(plant), int(cfg.model.diffusion.max_points),
                              seed=int(cfg.seed) + index).to(next(model.parameters()).device)
-        condition = _condition(model, encoder, data)
+        condition = _condition(model, backbone, data, frozen=True)
         prediction = sample(
             model, condition, data.xyz,
             steps=int(cfg.model.diffusion.sample_steps),
@@ -101,30 +101,62 @@ def main(argv: list[str] | None = None) -> None:
     if len(train_loader.dataset.full_dataset) != 92 or len(val_loader.dataset.full_dataset) != 29:
         raise ValueError("expected all 92 training and 29 validation plants from the three sources")
     compatibility = processed_dataset_compatibility(cfg.data.processed_root, "combined")
-    encoder, stage1_hash = load_frozen_stage1(cfg, device)
+    resume_payload = None
+    if known.resume:
+        resume_payload = torch.load(known.resume, map_location="cpu", weights_only=False)
+        require_stage2_schema(resume_payload)
+    backbone, stage1_hash = create_stage1_backbone(
+        cfg, device, load_source=resume_payload is None
+    )
     model = create_model(cfg).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg.trainer.learning_rate),
-                                  weight_decay=float(cfg.trainer.weight_decay))
-    scaler = torch.cuda.amp.GradScaler(enabled=bool(cfg.trainer.mixed_precision))
+    parameter_groups = [{"params": model.parameters(), "lr": float(cfg.trainer.learning_rate)}]
+    if backbone is not None:
+        parameter_groups.append({
+            "params": backbone.parameters(),
+            "lr": float(cfg.trainer.stage1_learning_rate),
+        })
+    optimizer = torch.optim.AdamW(parameter_groups, weight_decay=float(cfg.trainer.weight_decay))
+    scaler = torch.cuda.amp.GradScaler(
+        enabled=bool(cfg.trainer.mixed_precision),
+        init_scale=1024.0 if model.variant == "points_stage1" else 65536.0,
+    )
     scheduler = create_scheduler(
         int(cfg.model.diffusion.train_timesteps),
         float(cfg.model.diffusion.beta_start),
         float(cfg.model.diffusion.beta_end),
     )
     output = Path(str(cfg.output.dir))
-    output.mkdir(parents=True, exist_ok=True)
-    save_resolved_config(cfg, output)
-    start_epoch, best, stale = 0, float("inf"), 0
-    if known.resume:
-        checkpoint = load_stage2_checkpoint(
-            known.resume, model, stage1_hash=stage1_hash,
-            compatibility=compatibility, optimizer=optimizer,
+    existing_checkpoints = any(
+        (output / name).exists() for name in ("best.ckpt", "last.ckpt")
+    )
+    resume_in_output = (
+        known.resume is not None
+        and Path(known.resume).resolve().parent == output.resolve()
+    )
+    if model.variant == "points_stage1" and existing_checkpoints and not resume_in_output:
+        raise FileExistsError(
+            f"{output} already contains Stage 2 checkpoints; choose a new output.dir or --resume"
         )
+    start_epoch, best, stale = 0, float("inf"), 0
+    if resume_payload is not None:
+        checkpoint = load_stage2_checkpoint(
+            known.resume, model, compatibility=compatibility, optimizer=optimizer,
+            backbone=backbone, checkpoint=resume_payload, scaler=scaler,
+        )
+        stage1_hash = checkpoint.get("stage1_checkpoint_sha256")
         start_epoch = int(checkpoint["epoch"]) + 1
         best = float(checkpoint.get("metrics", {}).get("best_val_skeleton_chamfer_m", "inf"))
-    max_epochs = 1 if bool(cfg.trainer.fast_dev_run) else int(cfg.trainer.max_epochs)
+        optimizer.param_groups[0]["lr"] = float(cfg.trainer.learning_rate)
+        if backbone is not None:
+            optimizer.param_groups[1]["lr"] = float(cfg.trainer.stage1_learning_rate)
+    output.mkdir(parents=True, exist_ok=True)
+    save_resolved_config(cfg, output)
+    set_stage1_frozen(backbone, bool(cfg.trainer.freeze_stage1))
+    max_epochs = start_epoch + 1 if bool(cfg.trainer.fast_dev_run) else int(cfg.trainer.max_epochs)
+    accumulation = 1 if bool(cfg.trainer.fast_dev_run) else int(cfg.trainer.gradient_accumulation)
     for epoch in range(start_epoch, max_epochs):
         model.train()
+        set_stage1_frozen(backbone, bool(cfg.trainer.freeze_stage1))
         optimizer.zero_grad(set_to_none=True)
         totals = defaultdict(float)
         count = 0
@@ -135,7 +167,8 @@ def main(argv: list[str] | None = None) -> None:
             generator = torch.Generator().manual_seed(int(cfg.seed) + epoch * 100000 + index)
             data = augment_z(data, generator=generator).to(device)
             with torch.cuda.amp.autocast(enabled=bool(cfg.trainer.mixed_precision)):
-                condition = _condition(model, encoder, data)
+                condition = _condition(model, backbone, data,
+                                       frozen=bool(cfg.trainer.freeze_stage1))
                 timestep = torch.randint(0, int(cfg.model.diffusion.train_timesteps),
                                          (1,), device=device)
                 clean = torch.cat((data.target_xyz, data.target_flow), -1)
@@ -155,8 +188,8 @@ def main(argv: list[str] | None = None) -> None:
                 )
                 loss = mse + float(cfg.model.diffusion.regularization_weight) * regularization
                 loss = loss + float(cfg.model.diffusion.count_loss_weight) * count_loss
-            scaler.scale(loss / int(cfg.trainer.gradient_accumulation)).backward()
-            if (index + 1) % int(cfg.trainer.gradient_accumulation) == 0 or index + 1 == len(train_loader):
+            scaler.scale(loss / accumulation).backward()
+            if (index + 1) % accumulation == 0 or index + 1 == len(train_loader):
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
@@ -169,7 +202,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"DiffTS {model.variant} epoch {epoch + 1}: {summary}", flush=True)
         validate_now = bool(cfg.trainer.fast_dev_run) or (epoch + 1) % int(cfg.trainer.validation_interval) == 0
         if validate_now:
-            validation = validate(model, encoder, cfg, val_loader,
+            validation = validate(model, backbone, cfg, val_loader,
                                   max_samples=2 if bool(cfg.trainer.fast_dev_run) else None)
             summary.update({f"val_{key}": value for key, value in validation.items()
                             if isinstance(value, (int, float))})
@@ -178,13 +211,15 @@ def main(argv: list[str] | None = None) -> None:
                 best, stale = score, 0
                 summary["best_val_skeleton_chamfer_m"] = best
                 save_stage2_checkpoint(output / "best.ckpt", model, optimizer, cfg,
-                                       epoch, summary, stage1_hash, compatibility)
+                                       epoch, summary, stage1_hash, compatibility,
+                                       backbone=backbone, scaler=scaler)
             else:
                 stale += 1
             (output / "validation.json").write_text(json.dumps(validation, indent=2) + "\n")
         summary["best_val_skeleton_chamfer_m"] = best
         save_stage2_checkpoint(output / "last.ckpt", model, optimizer, cfg,
-                               epoch, summary, stage1_hash, compatibility)
+                               epoch, summary, stage1_hash, compatibility,
+                               backbone=backbone, scaler=scaler)
         (output / "metrics.json").write_text(json.dumps(summary, indent=2) + "\n")
         if stale >= int(cfg.trainer.early_stop_patience):
             print(f"DiffTS {model.variant}: validation patience reached", flush=True)

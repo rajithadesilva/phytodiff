@@ -13,7 +13,7 @@ from omegaconf import OmegaConf
 from tomato_recon.data.diffts import load_top_down_input, sample_points
 from tomato_recon.export.ply import write_point_ply
 from tomato_recon.models.diffusion.diffts_runtime import (
-    create_model, load_frozen_stage1, load_stage2_checkpoint, stage1_features,
+    create_model, create_stage1_backbone, load_stage2_checkpoint, require_stage2_schema, stage1_features,
 )
 from tomato_recon.models.diffusion.diffts_sampling import create_scheduler, sample
 
@@ -21,8 +21,7 @@ from tomato_recon.models.diffusion.diffts_sampling import create_scheduler, samp
 def run(checkpoint_path: Path, input_path: Path, output: Path, *,
         seed: int | None = None, steps: int | None = None) -> dict:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    if checkpoint.get("schema_version") != "diffts-stage2-v1":
-        raise ValueError("inference requires a DiffTS stage 2 checkpoint")
+    require_stage2_schema(checkpoint)
     cfg = OmegaConf.create(checkpoint["config"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type != "cuda":
@@ -35,11 +34,13 @@ def run(checkpoint_path: Path, input_path: Path, output: Path, *,
         raise ValueError("top-down input preprocessing is incompatible with DiffTS checkpoint")
     data = sample_points(data, int(cfg.model.diffusion.max_points),
                          seed=int(cfg.seed)).to(device)
-    encoder, stage1_hash = load_frozen_stage1(cfg, device)
+    backbone, _ = create_stage1_backbone(cfg, device, load_source=False)
     model = create_model(cfg).to(device).eval()
-    load_stage2_checkpoint(checkpoint_path, model, stage1_hash=stage1_hash)
+    load_stage2_checkpoint(checkpoint_path, model, backbone=backbone, checkpoint=checkpoint)
+    if backbone is not None:
+        backbone.eval()
     with torch.cuda.amp.autocast(enabled=False):
-        point_features, global_features = stage1_features(encoder, data)
+        point_features, global_features = stage1_features(backbone, data)
     with torch.no_grad():
         condition = model.encode_condition(
             data.xyz, data.rgb, data.rgb_available, point_features, global_features

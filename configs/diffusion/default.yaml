@@ -7,7 +7,7 @@ model:
   encoder:
     checkpoint: outputs/stage1_ablation_1/combined/kpconvx/best.ckpt
   diffusion:
-    variant: points
+    variant: points_stage1
     max_points: 8192
     width_divisor: 2
     condition_resolution: 0.001
@@ -28,7 +28,9 @@ trainer:
   gradient_accumulation: 4
   mixed_precision: true
   validation_interval: 5
-  early_stop_patience: 10
+  early_stop_patience: 100
+  freeze_stage1: true
+  stage1_learning_rate: 0.00001
 output:
   dir: outputs/diffts/${model.diffusion.variant}
 seed: 42

@@ -11,21 +11,26 @@ import numpy as np
 import torch
 
 from tomato_recon.config import load_config
-from tomato_recon.data.diffts import from_sample, load_top_down_input, rgb_available, sample_points
+from tomato_recon.data.diffts import DiffTSInput, from_sample, load_top_down_input, rgb_available, sample_points
 from tomato_recon.data.processed import make_tiny_sample
-from tomato_recon.models.diffusion.diffts_model import Condition
+from tomato_recon.models.diffusion.diffts_model import Condition, Stage1ConditionAdapter, sparse_xyz
 from tomato_recon.models.diffusion.diffts_sampling import (
     create_scheduler, direction_mst, q_sample, sample,
 )
-from tomato_recon.models.diffusion.diffts_runtime import load_stage2_checkpoint, TRAIN_VIEWS
+from tomato_recon.models.diffusion.diffts_runtime import (
+    STAGE1_ADAPTER_SCHEMA, TRAIN_VIEWS, load_stage2_checkpoint,
+    save_stage2_checkpoint, set_stage1_frozen, stage1_features,
+)
 from tomato_recon.models.diffusion.model import ConditionalSkeletonDenoiser
 
 
 class DiffTSTests(unittest.TestCase):
     def test_stage2_config_and_colour_provenance(self) -> None:
-        cfg, _ = load_config("diffusion")
+        cfg, _ = load_config("diffusion", ["model.diffusion.variant=points"])
         self.assertEqual(list(cfg.data.pcl_types), ["full", "top_down", "side"])
         self.assertEqual(cfg.model.diffusion.variant, "points")
+        self.assertTrue(cfg.trainer.freeze_stage1)
+        self.assertEqual(float(cfg.trainer.stage1_learning_rate), 0.00001)
         self.assertFalse(rgb_available({"dataset": "pheno4d", "rgb_available": False}))
         self.assertTrue(rgb_available({"dataset": "tomatopgt", "rgb_available": True}))
         self.assertTrue(rgb_available({"dataset": "tomatowur"}))
@@ -62,6 +67,95 @@ class DiffTSTests(unittest.TestCase):
         parents, edges = direction_mst(xyz, flow)
         self.assertEqual(parents.tolist(), [-1, 0, 1])
         self.assertEqual(edges.shape, (2, 2))
+
+    def test_stage1_adapter_voxel_alignment_and_gradients(self) -> None:
+        class Sparse:
+            def __init__(self, features, indices, spatial_shape, batch_size):
+                self.features, self.indices = features, indices
+
+        xyz = torch.tensor([[0., 0., 0.], [0., 0., 0.], [0.016, 0., 0.]])
+        points = torch.randn(3, 2, requires_grad=True)
+        global_feature = torch.randn(1, requires_grad=True)
+        adapter = Stage1ConditionAdapter(2, 1, 4, 0.016)
+        with patch("tomato_recon.models.diffusion.diffts_model.spconv",
+                   SimpleNamespace(SparseConvTensor=Sparse)):
+            field = adapter(xyz, points, global_feature)
+        self.assertEqual(field.sparse.features.shape, (2, 4))
+        torch.testing.assert_close(
+            sparse_xyz(field.sparse, field.origin_xyz, field.resolution),
+            torch.tensor([[0.008, 0.008, 0.008], [0.024, 0.008, 0.008]]),
+        )
+        projected = adapter.project(torch.cat(
+            (points, global_feature.expand(3, -1)), -1
+        ))
+        torch.testing.assert_close(field.sparse.features[0],
+                                   projected[:2].mean(0))
+        field.sparse.features.sum().backward()
+        self.assertIsNotNone(points.grad)
+        self.assertIsNotNone(global_feature.grad)
+        self.assertTrue(any(p.grad is not None for p in adapter.parameters()))
+
+    def test_stage1_backbone_freeze_and_unfreeze(self) -> None:
+        class TinyBackbone(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.projection = torch.nn.Linear(6, 4)
+
+            def forward(self, xyz, features, mask):
+                points = self.projection(features)
+                return points, [], points.mean(1)
+
+        backbone = TinyBackbone()
+        data = DiffTSInput(
+            "plant", "combined", "full", torch.zeros(3, 3),
+            torch.ones(3, 3), torch.ones(3, 3), True,
+        )
+        optimizer = torch.optim.AdamW([{"params": backbone.parameters(), "lr": 0.01}])
+        original = backbone.projection.weight.detach().clone()
+        set_stage1_frozen(backbone, True)
+        frozen_points, _ = stage1_features(backbone, data, frozen=True)
+        self.assertFalse(frozen_points.requires_grad)
+        self.assertFalse(backbone.training)
+        set_stage1_frozen(backbone, False)
+        points, global_feature = stage1_features(backbone, data, frozen=False)
+        (points.sum() + global_feature.sum()).backward()
+        self.assertTrue(backbone.training)
+        self.assertIsNotNone(backbone.projection.weight.grad)
+        optimizer.step()
+        self.assertFalse(torch.equal(original, backbone.projection.weight))
+        optimizer.zero_grad(set_to_none=True)
+        set_stage1_frozen(backbone, True)
+        self.assertFalse(any(p.requires_grad for p in backbone.parameters()))
+
+    def test_stage1_adapter_checkpoint_embeds_backbone(self) -> None:
+        class TinyModel(torch.nn.Linear):
+            variant = "points_stage1"
+            max_nodes = 256
+
+        cfg, _ = load_config("diffusion", ["model.diffusion.variant=points_stage1"])
+        model = TinyModel(1, 1)
+        backbone = torch.nn.Linear(2, 2)
+        optimizer = torch.optim.AdamW([
+            {"params": model.parameters(), "lr": 0.0001},
+            {"params": backbone.parameters(), "lr": 0.00001},
+        ])
+        original = backbone.weight.detach().clone()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "best.ckpt"
+            save_stage2_checkpoint(
+                path, model, optimizer, cfg, 3, {"best_val_skeleton_chamfer_m": 0.1},
+                "source-hash", {"signature": "data-hash"}, backbone=backbone,
+            )
+            with torch.no_grad():
+                backbone.weight.zero_()
+            loaded = load_stage2_checkpoint(
+                path, model, backbone=backbone, optimizer=optimizer,
+                compatibility={"signature": "data-hash"},
+            )
+            self.assertEqual(loaded["schema_version"], STAGE1_ADAPTER_SCHEMA)
+            self.assertEqual(loaded["stage1_checkpoint_sha256"], "source-hash")
+            self.assertTrue(loaded["stage1_frozen"])
+            torch.testing.assert_close(backbone.weight, original)
 
     def test_sampling_callback_records_initial_and_each_denoising_state(self) -> None:
         class Sparse:
@@ -123,6 +217,12 @@ class DiffTSTests(unittest.TestCase):
             model.variant = "points"
             with self.assertRaisesRegex(ValueError, "feature source mismatch"):
                 load_stage2_checkpoint(path, model, stage1_hash="different")
+            torch.save({
+                "schema_version": "diffts-stage2-v1", "variant": "points_stage1",
+                "model_state": model.state_dict(),
+            }, path)
+            with self.assertRaisesRegex(ValueError, "old points_stage1 checkpoints"):
+                load_stage2_checkpoint(path, model)
             torch.save({"stage": "diffusion", "model_state": model.state_dict()}, path)
             with self.assertRaisesRegex(ValueError, "old stage 2 checkpoints"):
                 load_stage2_checkpoint(path, model, stage1_hash=None)

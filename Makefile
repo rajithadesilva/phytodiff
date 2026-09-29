@@ -10,7 +10,7 @@ DATASET_VIS_COUNT ?= 0
 DATASET_VIS_AZIMUTH_DEG ?= 35
 DATASET_VIS_ELEVATION_DEG ?= 15
 
-STAGE1_TRAIN_OUTPUT ?= outputs/encoder/combined
+STAGE1_TRAIN_OUTPUT ?= outputs/encoder/combined/kpconvx
 STAGE1_CHECKPOINT ?= $(STAGE1_TRAIN_OUTPUT)/best.ckpt
 STAGE1_TRAIN_RESUME ?=
 STAGE1_PROCESSED_ROOT ?= data/dataset
@@ -31,13 +31,20 @@ STAGE1_ABLATION3_OUTPUT ?= outputs/stage1_ablation_3
 STAGE1_ABLATION3_RESUME ?=
 STAGE1_EPOCHS ?= 50
 STAGE2_OUTPUT_ROOT ?= outputs/diffts
+STAGE2_STAGE1_OUTPUT ?= $(STAGE2_OUTPUT_ROOT)/points_stage1_adapter
+STAGE2_FREEZE_STAGE1 ?= true
+STAGE2_STAGE1_LR ?= 0.00001
+STAGE2_STAGE1_RESUME ?=
 STAGE2_EPOCHS ?= 200
 STAGE2_MAX_POINTS ?= 8192
 STAGE2_VIS_VARIANT ?= points
 STAGE2_VIS_VIEW ?= top_down
 STAGE2_VIS_STEPS ?= 12
+STAGE2_VIS_FRAMES ?= $(STAGE2_VIS_STEPS)
+STAGE2_VIS_SAMPLE_STEPS ?=
 STAGE2_VIS_COUNT ?= 0
-STAGE2_VIS_OUTPUT ?= $(STAGE2_OUTPUT_ROOT)/$(STAGE2_VIS_VARIANT)/test_diffusion_frames
+STAGE2_VIS_CHECKPOINT ?= $(if $(filter points_stage1,$(STAGE2_VIS_VARIANT)),$(STAGE2_STAGE1_OUTPUT),$(STAGE2_OUTPUT_ROOT)/$(STAGE2_VIS_VARIANT))/best.ckpt
+STAGE2_VIS_OUTPUT ?= $(if $(filter points_stage1,$(STAGE2_VIS_VARIANT)),$(STAGE2_STAGE1_OUTPUT),$(STAGE2_OUTPUT_ROOT)/$(STAGE2_VIS_VARIANT))/test_diffusion_frames
 
 install:
 	python -m pip install -e ".[dev]"
@@ -138,7 +145,9 @@ train-stage2-points-stage1:
 		model.encoder.checkpoint=$(STAGE1_CHECKPOINT) \
 		model.diffusion.max_points=$(STAGE2_MAX_POINTS) \
 		trainer.max_epochs=$(STAGE2_EPOCHS) \
-		output.dir=$(STAGE2_OUTPUT_ROOT)/points_stage1
+		trainer.freeze_stage1=$(STAGE2_FREEZE_STAGE1) \
+		trainer.stage1_learning_rate=$(STAGE2_STAGE1_LR) \
+		output.dir=$(STAGE2_STAGE1_OUTPUT) $(STAGE2_STAGE1_RESUME)
 
 train-stage2:
 	$(MAKE) train-stage2-points
@@ -147,6 +156,6 @@ train-stage2:
 visualize-stage2-test:
 	docker compose -f docker/docker-compose.yml run --rm train \
 		python -u scripts/visualize_stage2_predictions.py \
-		--checkpoint $(STAGE2_OUTPUT_ROOT)/$(STAGE2_VIS_VARIANT)/best.ckpt \
-		--view $(STAGE2_VIS_VIEW) --steps $(STAGE2_VIS_STEPS) \
-		--count $(STAGE2_VIS_COUNT) --output $(STAGE2_VIS_OUTPUT)
+		--checkpoint $(STAGE2_VIS_CHECKPOINT) \
+		--view $(STAGE2_VIS_VIEW) --frames $(STAGE2_VIS_FRAMES) \
+		--count $(STAGE2_VIS_COUNT) --output $(STAGE2_VIS_OUTPUT) $(if $(STAGE2_VIS_SAMPLE_STEPS),--steps $(STAGE2_VIS_SAMPLE_STEPS),)

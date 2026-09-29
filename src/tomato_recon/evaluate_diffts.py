@@ -13,7 +13,7 @@ from omegaconf import OmegaConf
 from tomato_recon.data.diffts import from_sample, sample_points
 from tomato_recon.data.processed import PointCloudViewDataset, processed_dataset_compatibility
 from tomato_recon.models.diffusion.diffts_runtime import (
-    create_model, load_frozen_stage1, load_stage2_checkpoint, stage1_features,
+    create_model, create_stage1_backbone, load_stage2_checkpoint, require_stage2_schema, stage1_features,
 )
 from tomato_recon.models.diffusion.diffts_sampling import (
     create_scheduler, node_chamfer, sample, skeleton_chamfer,
@@ -23,8 +23,7 @@ from tomato_recon.models.diffusion.diffts_sampling import (
 def evaluate(checkpoint_path: Path, output: Path, *, split: str = "test",
              all_views: bool = False, steps: int | None = None) -> dict:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    if checkpoint.get("schema_version") != "diffts-stage2-v1":
-        raise ValueError("evaluation requires a DiffTS stage 2 checkpoint")
+    require_stage2_schema(checkpoint)
     cfg = OmegaConf.create(checkpoint["config"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type != "cuda":
@@ -36,10 +35,12 @@ def evaluate(checkpoint_path: Path, output: Path, *, split: str = "test",
     )
     if split == "test" and len(dataset.full_dataset) != 42:
         raise ValueError("expected all 42 held-out test plants")
-    encoder, stage1_hash = load_frozen_stage1(cfg, device)
+    backbone, _ = create_stage1_backbone(cfg, device, load_source=False)
     model = create_model(cfg).to(device).eval()
-    load_stage2_checkpoint(checkpoint_path, model, stage1_hash=stage1_hash,
-                           compatibility=compatibility)
+    load_stage2_checkpoint(checkpoint_path, model, backbone=backbone,
+                           compatibility=compatibility, checkpoint=checkpoint)
+    if backbone is not None:
+        backbone.eval()
     solver = create_scheduler(
         int(cfg.model.diffusion.train_timesteps),
         float(cfg.model.diffusion.beta_start),
@@ -51,7 +52,7 @@ def evaluate(checkpoint_path: Path, output: Path, *, split: str = "test",
             data = sample_points(from_sample(dataset[index]),
                                  int(cfg.model.diffusion.max_points),
                                  seed=int(cfg.seed) + index).to(device)
-            point_features, global_features = stage1_features(encoder, data)
+            point_features, global_features = stage1_features(backbone, data)
             condition = model.encode_condition(data.xyz, data.rgb, data.rgb_available,
                                                point_features, global_features)
             prediction = sample(

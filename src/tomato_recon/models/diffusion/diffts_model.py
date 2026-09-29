@@ -121,6 +121,7 @@ class Condition:
     origin_xyz: Tensor
     resolution: float
     count_logits: Tensor
+    stride: int = 16
 
 
 class ConditionEncoder(nn.Module):
@@ -138,6 +139,27 @@ class ConditionEncoder(nn.Module):
         for down in self.down:
             x = down(x)
         return x
+
+
+class Stage1ConditionAdapter(nn.Module):
+    """Project aligned Stage 1 features onto the sparse conditioning grid."""
+
+    def __init__(self, point_dim: int, global_dim: int, width: int,
+                 resolution: float) -> None:
+        super().__init__()
+        self.resolution = resolution
+        self.project = nn.Sequential(
+            nn.Linear(point_dim + global_dim, width),
+            nn.LeakyReLU(0.1),
+            nn.Linear(width, width),
+        )
+
+    def forward(self, xyz: Tensor, point_features: Tensor,
+                global_feature: Tensor) -> SparseField:
+        features = torch.cat(
+            (point_features, global_feature.expand(len(xyz), -1)), -1
+        )
+        return sparse_field(xyz, self.project(features), self.resolution)
 
 
 class LocalFusion(nn.Module):
@@ -161,7 +183,8 @@ class LocalFusion(nn.Module):
         )
 
     def forward(self, sparse, node_xyz: Tensor, condition: Condition, timestep: Tensor):
-        cond_xyz = sparse_xyz(condition.sparse, condition.origin_xyz, condition.resolution, 16)
+        cond_xyz = sparse_xyz(condition.sparse, condition.origin_xyz,
+                              condition.resolution, condition.stride)
         neighbours = min(8, len(cond_xyz))
         parts = []
         for start in range(0, len(node_xyz), 128):
@@ -201,8 +224,13 @@ class DiffTSModel(nn.Module):
         self.condition_resolution = condition_resolution
         self.node_resolution = node_resolution
         channels = tuple(v // width_divisor for v in (32, 32, 64, 128, 256))
-        input_channels = 7 + (stage1_point_dim + stage1_global_dim if variant == "points_stage1" else 0)
-        self.condition_encoder = ConditionEncoder(input_channels, channels)
+        if variant == "points":
+            self.condition_encoder = ConditionEncoder(7, channels)
+        else:
+            self.stage1_adapter = Stage1ConditionAdapter(
+                stage1_point_dim, stage1_global_dim, channels[4],
+                16 * self.condition_resolution,
+            )
         self.count_head = nn.Sequential(
             nn.Linear(channels[4], channels[4]), nn.LeakyReLU(0.1),
             nn.Linear(channels[4], max_nodes - 1),
@@ -232,20 +260,24 @@ class DiffTSModel(nn.Module):
         self, xyz: Tensor, rgb: Tensor, rgb_available: bool,
         stage1_points: Tensor | None = None, stage1_global: Tensor | None = None,
     ) -> Condition:
-        flag = xyz.new_full((len(xyz), 1), float(rgb_available))
-        input_features = [xyz, rgb if rgb_available else torch.zeros_like(rgb), flag]
         if self.variant == "points_stage1":
             if stage1_points is None or stage1_global is None:
                 raise ValueError("points_stage1 requires both Stage 1 feature tensors")
             if len(stage1_points) != len(xyz):
                 raise ValueError("Stage 1 features must align with conditioning points")
-            input_features += [stage1_points, stage1_global.expand(len(xyz), -1)]
-        elif stage1_points is not None or stage1_global is not None:
-            raise ValueError("points variant must not consume Stage 1 features")
-        field = sparse_field(xyz, torch.cat(input_features, -1), self.condition_resolution)
-        encoded = self.condition_encoder(field)
+            field = self.stage1_adapter(xyz, stage1_points, stage1_global)
+            encoded = field.sparse
+            stride = 1
+        else:
+            if stage1_points is not None or stage1_global is not None:
+                raise ValueError("points variant must not consume Stage 1 features")
+            flag = xyz.new_full((len(xyz), 1), float(rgb_available))
+            features = torch.cat((xyz, rgb if rgb_available else torch.zeros_like(rgb), flag), -1)
+            field = sparse_field(xyz, features, self.condition_resolution)
+            encoded = self.condition_encoder(field)
+            stride = 16
         count_logits = self.count_head(encoded.features.mean(0, keepdim=True)).squeeze(0)
-        return Condition(encoded, field.origin_xyz, field.resolution, count_logits)
+        return Condition(encoded, field.origin_xyz, field.resolution, count_logits, stride)
 
     def denoise(self, state: Tensor, timestep: Tensor, condition: Condition) -> Tensor:
         field = sparse_field(state[:, :3], state, self.node_resolution)

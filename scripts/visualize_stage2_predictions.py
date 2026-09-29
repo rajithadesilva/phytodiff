@@ -17,7 +17,7 @@ from tomato_recon.data.processed import (
     POINT_CLOUD_TYPES, PointCloudViewDataset, processed_dataset_compatibility,
 )
 from tomato_recon.models.diffusion.diffts_runtime import (
-    create_model, file_hash, load_frozen_stage1, load_stage2_checkpoint, stage1_features,
+    create_model, create_stage1_backbone, file_hash, load_stage2_checkpoint, require_stage2_schema, stage1_features,
 )
 from tomato_recon.models.diffusion.diffts_sampling import create_scheduler, direction_mst, sample
 
@@ -75,7 +75,8 @@ def _draw_skeleton(draw: ImageDraw.ImageDraw, points: np.ndarray, edges: np.ndar
 
 
 def render_frame(path: Path, *, plant_id: str, variant: str, view: str,
-                 step_index: int, steps: int, timestep: int, scan: np.ndarray,
+                 frame_index: int, frame_count: int, step_index: int, steps: int,
+                 timestep: int, scan: np.ndarray,
                  predicted_xyz: np.ndarray, predicted_edges: np.ndarray,
                  target_xyz: np.ndarray, target_edges: np.ndarray, bounds) -> None:
     """Draw large paired front X-Z skeleton views at a fixed scale for this plant."""
@@ -88,9 +89,9 @@ def render_frame(path: Path, *, plant_id: str, variant: str, view: str,
     panel_font = _font(18)
     draw.text((PANEL_GAP, 12), f"Stage 2 diffusion | {plant_id} | {variant} | {view} | front X-Z",
               fill=(25, 32, 37), font=title_font)
-    phase = "initial noise" if step_index == 0 else f"denoising step {step_index}/{steps}"
     draw.text((PANEL_GAP, 47),
-              f"{phase} | diffusion t={timestep} | predicted {len(predicted_xyz)} nodes"
+              f"frame {frame_index}/{frame_count} | denoising step {step_index}/{steps}"
+              f" | diffusion t={timestep} | predicted {len(predicted_xyz)} nodes"
               f" | GT {len(target_xyz)} nodes",
               fill=(55, 63, 68), font=detail_font)
 
@@ -147,13 +148,26 @@ def _selected_indices(dataset: PointCloudViewDataset, count: int,
     return list(range(len(instances) if count == 0 else min(count, len(instances))))
 
 
+def _frame_steps(steps: int, frames: int) -> tuple[int, ...]:
+    """Select the first and final denoising results plus evenly spaced results between."""
+    if steps < 2 or frames < 2 or frames > steps:
+        raise ValueError("require 2 <= --frames <= sampling --steps")
+    intervals = frames - 1
+    return tuple(
+        1 + (index * (steps - 1) + intervals // 2) // intervals
+        for index in range(frames)
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, help="Root directory for plant frame folders")
     parser.add_argument("--view", choices=POINT_CLOUD_TYPES, default="top_down")
-    parser.add_argument("--steps", type=int, default=12,
-                        help="Denoising steps; saves initial state and each step (default: 12)")
+    parser.add_argument("--frames", type=int, default=12,
+                        help="Evenly spaced output frames, including first and last (default: 12)")
+    parser.add_argument("--steps", type=int,
+                        help="Denoising steps; defaults to the checkpoint sample_steps")
     parser.add_argument("--count", type=int, default=0,
                         help="First N test plants; 0 selects all (default: 0)")
     parser.add_argument("--plant-id", action="append", default=[],
@@ -161,19 +175,24 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-render-points", type=int, default=2000,
                         help="Maximum input scan points drawn in each frame")
     args = parser.parse_args(argv)
-    if args.steps < 1:
-        parser.error("--steps must be positive")
     if args.max_render_points < 1:
         parser.error("--max-render-points must be positive")
     if args.count < 0:
         parser.error("--count must be nonnegative")
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    if checkpoint.get("schema_version") != "diffts-stage2-v1":
-        raise ValueError("visualization requires a DiffTS stage 2 checkpoint")
+    require_stage2_schema(checkpoint)
     cfg = OmegaConf.create(checkpoint["config"])
-    if args.steps > int(cfg.model.diffusion.train_timesteps):
+    sampling_steps = (
+        int(cfg.model.diffusion.sample_steps) if args.steps is None else args.steps
+    )
+    if sampling_steps > int(cfg.model.diffusion.train_timesteps):
         parser.error("--steps cannot exceed the checkpoint's training timesteps")
+    try:
+        frame_steps = _frame_steps(sampling_steps, args.frames)
+    except ValueError as exc:
+        parser.error(str(exc))
+    frame_step_set = set(frame_steps)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type != "cuda":
         raise RuntimeError("DiffTS visualization requires a CUDA GPU")
@@ -183,25 +202,29 @@ def main(argv: list[str] | None = None) -> None:
     indices = _selected_indices(dataset, args.count, args.plant_id)
     if not indices:
         raise ValueError("the selected test split has no plants")
-    encoder, stage1_hash = load_frozen_stage1(cfg, device)
+    backbone, _ = create_stage1_backbone(cfg, device, load_source=False)
     model = create_model(cfg).to(device).eval()
-    load_stage2_checkpoint(args.checkpoint, model, stage1_hash=stage1_hash,
-                           compatibility=compatibility)
+    load_stage2_checkpoint(args.checkpoint, model, backbone=backbone,
+                           compatibility=compatibility, checkpoint=checkpoint)
+    if backbone is not None:
+        backbone.eval()
     solver = create_scheduler(int(cfg.model.diffusion.train_timesteps),
                               float(cfg.model.diffusion.beta_start),
                               float(cfg.model.diffusion.beta_end))
     output = args.output or Path("outputs/diffts") / model.variant / "test_diffusion_frames"
-    run_output = output / f"steps_{args.steps:03d}"
+    run_output = output / args.view / f"frames_{args.frames:03d}_steps_{sampling_steps:03d}"
     run_output.mkdir(parents=True, exist_ok=True)
     manifest = {
-        "schema_version": "diffts-stage2-visualization-v2",
+        "schema_version": "diffts-stage2-visualization-v3",
         "checkpoint": str(args.checkpoint),
         "checkpoint_sha256": file_hash(args.checkpoint),
         "variant": model.variant,
         "split": "test",
         "view": args.view,
         "projection": "front_xz",
-        "denoising_steps": args.steps,
+        "denoising_steps": sampling_steps,
+        "frame_count": args.frames,
+        "sampled_steps": list(frame_steps),
         "plants": {},
     }
     with torch.inference_mode():
@@ -209,13 +232,14 @@ def main(argv: list[str] | None = None) -> None:
             data = sample_points(from_sample(dataset[index]),
                                  int(cfg.model.diffusion.max_points),
                                  seed=int(cfg.seed) + index).to(device)
-            point_features, global_features = stage1_features(encoder, data)
+            point_features, global_features = stage1_features(backbone, data)
             condition = model.encode_condition(data.xyz, data.rgb, data.rgb_available,
                                                point_features, global_features)
             states: list[tuple[int, int, torch.Tensor]] = []
             def capture(step_index: int, timestep: int, state: torch.Tensor) -> None:
-                states.append((step_index, timestep, state.detach().cpu()))
-            prediction = sample(model, condition, data.xyz, steps=args.steps,
+                if step_index in frame_step_set:
+                    states.append((step_index, timestep, state.detach().cpu()))
+            prediction = sample(model, condition, data.xyz, steps=sampling_steps,
                                 guidance=float(cfg.model.diffusion.guidance),
                                 seed=int(cfg.seed), scheduler=solver, on_step=capture)
             scan = data.xyz.detach().cpu().numpy()
@@ -227,21 +251,24 @@ def main(argv: list[str] | None = None) -> None:
             target_edges = np.column_stack((parents[children], children))
             bounds = _bounds(data.xyz.detach().cpu().numpy(), target_xyz)
             plant_output = run_output / data.plant_id
+            if tuple(step for step, _, _ in states) != frame_steps:
+                raise RuntimeError("diffusion sampler did not capture the requested steps")
             frames = []
-            for step_index, timestep, state in states:
+            for frame_index, (step_index, timestep, state) in enumerate(states, start=1):
                 node_xyz = state[:, :3]
                 flow = torch.nn.functional.normalize(state[:, 3:], dim=-1)
                 _, edges = direction_mst(node_xyz, flow)
-                frame_path = plant_output / f"frame_{step_index:03d}.png"
+                frame_path = plant_output / f"frame_{frame_index:03d}.png"
                 render_frame(frame_path, plant_id=data.plant_id, variant=model.variant,
-                             view=data.view, step_index=step_index, steps=args.steps,
+                             view=data.view, frame_index=frame_index,
+                             frame_count=args.frames, step_index=step_index,
+                             steps=sampling_steps,
                              timestep=timestep, scan=scan,
                              predicted_xyz=node_xyz.numpy(), predicted_edges=edges.numpy(),
                              target_xyz=target_xyz, target_edges=target_edges, bounds=bounds)
-                frames.append({"step": step_index, "timestep": timestep,
+                frames.append({"frame": frame_index, "step": step_index,
+                               "timestep": timestep,
                                "path": str(frame_path)})
-            if len(frames) != args.steps + 1:
-                raise RuntimeError("diffusion sampler did not return the requested frame count")
             manifest["plants"][data.plant_id] = {
                 "dataset": data.dataset,
                 "predicted_count": prediction.predicted_count,

@@ -1,6 +1,6 @@
 # Tomato plant reconstruction: Stage 2 DiffTS
 
-This repository prepares tomato point clouds, trains a Stage 1 point encoder, and now trains two DiffTS Stage 2 skeleton models. The **points** variant conditions on XYZ and available RGB; **points_stage1** additionally uses frozen per-point and global features from the all-view Stage 1 checkpoint. Both infer skeleton nodes and parent directions from saved top-down point clouds. Stage 3 graph, Stage 4 parametric geometry, and Stage 5 joint inference commands currently report that DiffTS integration is pending.
+This repository prepares tomato point clouds, trains a Stage 1 point encoder, and now trains two DiffTS Stage 2 skeleton models. The **points** variant conditions on XYZ and available RGB; **points_stage1** uses an all-view Stage 1 backbone as its feature encoder, followed by a trainable sparse adapter. Stage 1 is frozen by default and can be fine tuned during Stage 2. Both infer skeleton nodes and parent directions from saved top-down point clouds. Stage 3 graph, Stage 4 parametric geometry, and Stage 5 joint inference commands currently report that DiffTS integration is pending.
 
 Stage 2 adapts the [DiffTS implementation](https://github.com/PRBonn/DiffTS/tree/a1b75f5c4804ac018c553dcc6cf9a78bd518d8e4) to the existing CUDA 12.1/spconv environment. The sparse U-Net, weighted scan-neighbour conditioning, six-channel noise prediction, classifier-free guidance, and DPM solver follow DiffTS; a supervised count head removes its evaluation-time dependence on target node counts. Ported code retains the upstream MIT attribution.
 
@@ -388,10 +388,11 @@ docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_diffusion model.diffusion.variant=points
 
 docker compose -f docker/docker-compose.yml run --rm train \
-  python -m tomato_recon.train.train_diffusion model.diffusion.variant=points_stage1
+  python -m tomato_recon.train.train_diffusion model.diffusion.variant=points_stage1 \
+  output.dir=outputs/diffts/points_stage1_adapter
 ```
 
-Training writes separate `outputs/diffts/<variant>/best.ckpt` and `last.ckpt` files. The Stage 1 variant requires `outputs/stage1_ablation_1/combined/kpconvx/best.ckpt`, trained on `[full,top_down,side]`. The default uses 8,192 sampled conditioning points, batch size one, mixed precision, four-step gradient accumulation, a 200-epoch ceiling, validation every five epochs, and ten-validation patience. Resume with `--resume outputs/diffts/<variant>/last.ckpt`.
+Training writes `outputs/diffts/points/{best,last}.ckpt` and `outputs/diffts/points_stage1_adapter/{best,last}.ckpt`. The new Stage 1 adapter starts from the all-view checkpoint configured by `model.encoder.checkpoint`; its own checkpoint embeds the backbone weights. The default uses 8,192 sampled conditioning points, batch size one, mixed precision, four-step gradient accumulation, a 200-epoch ceiling, validation every five epochs, and the currently configured patience of 100 validation checks. Set `trainer.freeze_stage1=false` to fine tune the backbone at `trainer.stage1_learning_rate` (default `0.00001`). Resume with `--resume outputs/diffts/points_stage1_adapter/last.ckpt`; the freeze setting may change on resume. Existing `points_stage1` checkpoints use the previous architecture and cannot resume this run.
 
 ### 8. Evaluate the held-out top-down views
 
@@ -403,8 +404,8 @@ docker compose -f docker/docker-compose.yml run --rm train \
 
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.evaluate_diffts \
-  --checkpoint outputs/diffts/points_stage1/best.ckpt \
-  --output outputs/diffts/points_stage1/test_top_down.json
+  --checkpoint outputs/diffts/points_stage1_adapter/best.ckpt \
+  --output outputs/diffts/points_stage1_adapter/test_top_down.json
 ```
 
 Reports contain node and sampled-skeleton Chamfer distances, node-count error, and per-source summaries for all 42 held-out plants. Use `--split val --all-views` to inspect validation metrics for all three views.
@@ -423,7 +424,7 @@ Inference reads only the saved `top_down.npz` input and its metadata. It writes 
 
 ## Configuration and checkpoints
 
-Stage 2 settings live in `configs/diffusion/default.yaml`. Each DiffTS checkpoint stores its variant, resolved config, full dataset compatibility signature, three training views, and, when applicable, the exact Stage 1 checkpoint hash. Loading rejects mismatches. The earlier Stage 2 and later-stage checkpoint formats are not compatible with this milestone.
+Stage 2 settings live in `configs/diffusion/default.yaml`. `points` retains the `diffts-stage2-v1` checkpoint schema; new `points_stage1` adapter checkpoints use `diffts-stage2-v2` and embed the Stage 1 backbone weights, its source checkpoint hash, and the freeze setting. Both store the resolved config, training views, and dataset compatibility signature. Loading rejects incompatible variants, data, and architecture versions.
 
 ## Tests
 

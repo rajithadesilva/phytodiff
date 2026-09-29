@@ -40,7 +40,7 @@ Every training stage reports epoch and batch progress, running component losses,
 - Supported encoders: `pointnext`, `sonata_ptv3`, and `kpconvx`.
 - Expected: the selected output directory contains `best.ckpt`, `last.ckpt`, metrics, run metadata, and `smoke_predictions.pt`. Training uses only `train`, validates on `val`, and selects `best.ckpt` by validation overall score.
 - Verify: inspect `val_semantic_miou`, validation skeleton precision/recall, centreline offset MAE, junction F1, and checkpoint stage/hash/K fields. The test split is not loaded during training or checkpoint selection.
-- Make target: `make train-stage1` trains KPConvX on the combined dataset with all three views and writes `outputs/encoder/combined/best.ckpt`. Set `STAGE1_EPOCHS` or `STAGE1_TRAIN_OUTPUT` to change the run; `STAGE1_CHECKPOINT` points to its best checkpoint for the Makefile Stage 2 feature variant.
+- Make target: `make train-stage1` trains KPConvX on the combined dataset with all three views and writes `outputs/encoder/combined/kpconvx/best.ckpt`. Set `STAGE1_EPOCHS` or `STAGE1_TRAIN_OUTPUT` to change the run; `STAGE1_CHECKPOINT` points to its best checkpoint for the Makefile Stage 2 feature variant.
 
 Visualise predictions from the trained Stage 1 checkpoint:
 
@@ -96,27 +96,32 @@ availability, and target-free partial-view files with
 `python scripts/audit_diffts_data.py`. The report is saved to
 `outputs/diffts/data_audit.json`. Checkpoint selection uses the 29
 validation top-down views and skeleton Chamfer distance. The points variant
-uses XYZ, RGB, and an RGB availability flag. The points_stage1 variant adds
-frozen per-point and global features from the all-view KPConvX Stage 1
-checkpoint. Stage 1 weights do not update during Stage 2 training.
+uses XYZ, RGB, and an RGB availability flag. The points_stage1 variant uses
+the all-view KPConvX Stage 1 backbone as its only feature encoder; a trainable
+adapter projects its point and global features onto the sparse grid consumed
+by the denoising U-Net. Stage 1 is frozen by default.
 
 ```bash
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.train.train_diffusion model.diffusion.variant=points
 
 docker compose -f docker/docker-compose.yml run --rm train \
-  python -m tomato_recon.train.train_diffusion model.diffusion.variant=points_stage1
+  python -m tomato_recon.train.train_diffusion model.diffusion.variant=points_stage1 \
+  output.dir=outputs/diffts/points_stage1_adapter
 ```
 
-Use `make train-stage2` to run both variants in sequence, or `make train-stage2-points` and `make train-stage2-points-stage1` separately. The latter uses `STAGE1_CHECKPOINT` (by default, the output of `make train-stage1`). Set `STAGE2_MAX_POINTS` and `STAGE2_EPOCHS` for both Makefile runs.
+Use `make train-stage2` to run both variants in sequence, or run each target separately. The Stage 1 target uses `STAGE1_CHECKPOINT` (by default, the output of `make train-stage1`). Set `STAGE2_MAX_POINTS` and `STAGE2_EPOCHS` for both runs. Set `STAGE2_FREEZE_STAGE1=false` to fine tune the backbone, with `STAGE2_STAGE1_LR` controlling its learning rate. To change the freeze setting on resume, pass `STAGE2_STAGE1_RESUME="--resume outputs/diffts/points_stage1_adapter/last.ckpt"` to the Stage 1 target.
 
 Outputs are `outputs/diffts/points/{best,last}.ckpt` and
-`outputs/diffts/points_stage1/{best,last}.ckpt`, with resolved configs and
-validation metrics in each directory. The default is 8,192 scan points,
-batch size one, mixed precision, accumulation of four, a half-width sparse
-network, 200 epochs maximum, validation every five epochs, and patience of
-ten validation checks. Use `model.diffusion.max_points=4096` for both runs
-if the 8 GB GPU preflight cannot accommodate 8,192 points.
+`outputs/diffts/points_stage1_adapter/{best,last}.ckpt`, with resolved configs
+and validation metrics in each directory. New adapter checkpoints embed the
+Stage 1 backbone and do not need the source checkpoint for inference. Old
+`points_stage1` checkpoints cannot resume the new architecture. The default
+is 8,192 scan points, batch size one, mixed precision, accumulation of four,
+a half-width sparse network, 200 epochs maximum, validation every five epochs,
+and the currently configured patience of 100 validation checks. At the
+200-epoch cap, this patience setting does not trigger early stopping. Use
+`model.diffusion.max_points=4096` if the 8 GB GPU cannot hold 8,192 points.
 
 A short preflight for either variant is:
 
@@ -131,7 +136,7 @@ Replace `points` with `points_stage1` and use a separate output directory for
 the second preflight. Inspect finite training losses, a 2–256 node prediction,
 and readable JSON/PLY inference output before production training.
 
-## 8. Evaluate both frozen checkpoints
+## 8. Evaluate both checkpoints
 
 Evaluate each best checkpoint once on the 42 held-out top-down views after
 validation-based model selection. Reports include node Chamfer, skeleton
@@ -145,17 +150,19 @@ docker compose -f docker/docker-compose.yml run --rm train \
 
 docker compose -f docker/docker-compose.yml run --rm train \
   python -m tomato_recon.evaluate_diffts \
-  --checkpoint outputs/diffts/points_stage1/best.ckpt \
-  --output outputs/diffts/points_stage1/test_top_down.json
+  --checkpoint outputs/diffts/points_stage1_adapter/best.ckpt \
+  --output outputs/diffts/points_stage1_adapter/test_top_down.json
 ```
 
-Visualise a short denoising sequence for every held-out test plant after training:
+Visualise the full denoising trajectory for held-out test plants, saving 12 evenly spaced frames:
 
 ```bash
-make visualize-stage2-test STAGE2_VIS_VARIANT=points STAGE2_VIS_STEPS=12
+make visualize-stage2-test STAGE2_VIS_FRAMES=12
 ```
 
-This uses the selected variant's best checkpoint and the top-down test view by default. Each plant gets `frame_000.png` (initial noisy nodes) and one PNG per denoising step under `outputs/diffts/<variant>/test_diffusion_frames/steps_012/<plant_id>/`. Each frame shows large front X-Z prediction and ground-truth skeleton panels over the input scan. Both panels use one fixed scale from that plant's input scan and GT, so denoising outliers cannot shrink the visible plant; the footer counts predicted nodes outside the view. A `manifest.json` records the checkpoint hash, plant IDs, frame paths, and timesteps. Set `STAGE2_VIS_COUNT=3` for a short preview, or `STAGE2_VIS_VIEW=side` for another view. The script also accepts repeatable `--plant-id` arguments to select exact test plants. The number of denoising steps controls the actual sampler, so short sequences are quick previews and can differ from the checkpoint's full 200-step prediction.
+The Make target defaults to the `points` checkpoint and `top_down` test view; set `STAGE2_VIS_VARIANT=points_stage1` to use the new adapter checkpoint, or `STAGE2_VIS_VIEW=full` to change the view. The sampler runs the checkpoint's configured number of inference steps (normally 200). It saves exactly 12 frames per plant: `frame_001.png` is the first denoising result, `frame_012.png` is the final result, and the intervening frames are evenly spaced in sampler-step order. The images are under the selected variant output directory at `test_diffusion_frames/<view>/frames_012_steps_200/<plant_id>/`; `manifest.json` records each frame's actual step and diffusion timestep. Use `STAGE2_VIS_SAMPLE_STEPS` only when you intentionally want a shorter sampling trajectory. The previous `STAGE2_VIS_STEPS` Make variable remains an alias for the number of saved frames.
+
+Each frame shows large front X-Z prediction and ground-truth skeleton panels over the input scan. Both panels use one fixed scale from that plant's input scan and GT, so denoising outliers cannot shrink the visible plant; the footer counts predicted nodes outside the view. Set `STAGE2_VIS_COUNT=3` for a short preview. The script also accepts repeatable `--plant-id` arguments to select exact test plants.
 
 ## 9. Infer a saved top-down view
 

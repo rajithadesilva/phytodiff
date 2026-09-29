@@ -22,8 +22,9 @@ postprocessing creates one rooted tree. Standalone inference writes these
 fields to `skeleton.json` and writes nodes and edges to `skeleton.ply`.
 
 The `points` conditioner accepts XYZ, RGB, and RGB availability. The
-`points_stage1` conditioner also accepts aligned point and global features
-from a frozen all-view KPConvX checkpoint. Training uses all three processed
+`points_stage1` conditioner uses aligned point and global features from the
+all-view KPConvX backbone, followed by a trainable sparse adapter. The
+backbone is frozen by default and can be fine tuned. Training uses all three processed
 views and each plant's full skeleton; standalone inference accepts only a
 processed `top_down.npz` and does not open target fields.
 
@@ -37,10 +38,12 @@ JSON schema 1.0 records Z-up/metres, one root, typed/role/visibility/confidence 
 
 ## Checkpoints
 
-Each DiffTS `best.ckpt` stores schema `diffts-stage2-v1`, conditioning variant,
-resolved config, maximum count, all three training views, the combined dataset
-compatibility signature, source commit, metrics, and the exact Stage 1
-checkpoint hash when applicable. Loading rejects old Stage 2 checkpoints,
-variant, node-limit, dataset, and Stage 1 hash mismatches. Points and
-points_stage1 use separate checkpoint directories. Stages 3–5 await integration
+The `points` checkpoint retains schema `diffts-stage2-v1`. The new
+`points_stage1` adapter checkpoint uses `diffts-stage2-v2` and embeds the
+backbone weights, its source checkpoint hash, and the freeze setting. Both
+store the variant, resolved config, maximum count, all training views, dataset
+compatibility signature, source commit, and metrics. Loading rejects variant,
+node-limit, dataset, and architecture mismatches. Existing `points_stage1`
+v1 checkpoints cannot resume the adapter architecture. The variants use
+separate checkpoint directories. Stages 3–5 await integration
 with this variable-length contract.
