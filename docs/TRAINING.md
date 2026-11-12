@@ -2,6 +2,10 @@
 
 The stages are deliberately separate. Do not skip ahead, mix preprocessing hashes, change K between stages, or tune any setting on the test split. Use `--resume PATH` to resume the same stage; checkpoint validation rejects incompatible caches.
 
+Run `make help` for the Docker workflow commands, grouped as `data-*`, `stage1-*`,
+`stage2-*`, and `check-*`. Earlier Makefile command names remain aliases with the
+same variables, output paths, and execution behavior.
+
 Every training stage reports epoch and batch progress, running component losses, ETA, and elapsed epoch time. Interactive terminals update one line in place; redirected or captured logs emit periodic progress lines.
 
 ## 1. Build Docker and verify GPU
@@ -34,13 +38,13 @@ Every training stage reports epoch and batch progress, running component losses,
 
 ## 5. Train Stage 1 encoder
 
-- Prerequisite: verified caches and `make prepare-stage1-models` when running Sonata.
+- Prerequisite: verified caches and `make stage1-prepare-models` when running Sonata.
 - Combined command: `python -m tomato_recon.train.train_encoder --config-name encoder data.dataset=combined output.dir=outputs/encoder/combined`.
 - Individual command: replace `combined` with `tomatowur`, `tomatopgt`, or `pheno4d` and use a distinct output directory.
 - Supported encoders: `pointnext`, `sonata_ptv3`, and `kpconvx`.
 - Expected: the selected output directory contains `best.ckpt`, `last.ckpt`, metrics, run metadata, and `smoke_predictions.pt`. Training uses only `train`, validates on `val`, and selects `best.ckpt` by validation overall score.
 - Verify: inspect `val_semantic_miou`, validation skeleton precision/recall, centreline offset MAE, junction F1, and checkpoint stage/hash/K fields. The test split is not loaded during training or checkpoint selection.
-- Make target: `make train-stage1` trains KPConvX on the combined dataset with all three views and writes `outputs/encoder/combined/kpconvx/best.ckpt`. Set `STAGE1_EPOCHS` or `STAGE1_TRAIN_OUTPUT` to change the run; `STAGE1_CHECKPOINT` points to its best checkpoint for the Makefile Stage 2 feature variant.
+- Make target: `make stage1-train` trains KPConvX on the combined dataset with all three views and writes `outputs/encoder/combined/kpconvx/best.ckpt`. Set `STAGE1_EPOCHS` or `STAGE1_TRAIN_OUTPUT` to change the run; `STAGE1_CHECKPOINT` points to its best checkpoint for the Makefile Stage 2 feature variant.
 
 Visualise predictions from the trained Stage 1 checkpoint:
 
@@ -54,11 +58,11 @@ docker compose -f docker/docker-compose.yml run --rm train \
 ```
 
 Run the three-model architecture comparison, live global progress, held-out evaluation,
-and all test-plant visualizations with `make stage1-ablation-1`. It uses one source
+and all test-plant visualizations with `make stage1-compare-backbones`. It uses one source
 selection and one ordered point-cloud view array. Reports and the validation-selected
 `winner.json` are written under `outputs/stage1_ablation_1/`.
 
-Run `make stage1-ablation-2` after Ablation 1. It retrains the winning architecture on
+Run `make stage1-compare-views` after Ablation 1. It retrains the winning architecture on
 all seven nonempty combinations of `full`, `top_down`, and `side`, then evaluates the
 seven checkpoints on all seven test configurations. The 49-cell JSON/CSV/Markdown
 reports and five task heatmaps are written under `outputs/stage1_ablation_2/`.
@@ -88,6 +92,22 @@ or repeatedly choose models using test results.
 
 ## 7. Train both DiffTS Stage 2 variants
 
+The instructions in this section retain the legacy DiffTS workflow. To use the
+separate AG-GFM backend, see [AG-GFM](AGGFM.md). Its Docker Makefile commands support
+individual datasets and arbitrary view combinations:
+
+```bash
+make stage2-train-aggfm STAGE2_DATASET=tomatopgt STAGE2_PCL_TYPES="full side"
+make stage2-train STAGE2_MODEL=aggfm STAGE2_DATASET=combined STAGE2_PCL_TYPES="full top_down side"
+make stage2-train STAGE2_MODEL=aggfm STAGE2_RESUME=outputs/aggfm/combined/full_top_down_side/last.ckpt
+```
+
+AG-GFM loads the complete Stage 1 checkpoint at `STAGE2_ENCODER_CHECKPOINT`
+(defaults to `STAGE1_CHECKPOINT`). Stage 1 remains frozen unless
+`STAGE2_FREEZE_STAGE1=false` is selected for a new run. Only validation skeleton
+Chamfer chooses the best checkpoint; top-down takes precedence whenever selected.
+No fixed plant counts are imposed by this trainer.
+
 Stage 2 uses the prepared combined dataset: 92 training plants × 3 views, 29
 validation plants × 3 views, and 42 held-out test plants. Each training view
 uses the same existing full skeleton target for its plant; only the input point
@@ -110,7 +130,7 @@ docker compose -f docker/docker-compose.yml run --rm train \
   output.dir=outputs/diffts/points_stage1_adapter
 ```
 
-Use `make train-stage2` to run both variants in sequence, or run each target separately. The Stage 1 target uses `STAGE1_CHECKPOINT` (by default, the output of `make train-stage1`). Set `STAGE2_MAX_POINTS` and `STAGE2_EPOCHS` for both runs. Set `STAGE2_FREEZE_STAGE1=false` to fine tune the backbone, with `STAGE2_STAGE1_LR` controlling its learning rate. To change the freeze setting on resume, pass `STAGE2_STAGE1_RESUME="--resume outputs/diffts/points_stage1_adapter/last.ckpt"` to the Stage 1 target.
+Use `make stage2-train` to run both variants in sequence, or run each target separately. The Stage 1 target uses `STAGE1_CHECKPOINT` (by default, the output of `make stage1-train`). Set `STAGE2_MAX_POINTS` and `STAGE2_EPOCHS` for both runs. Set `STAGE2_FREEZE_STAGE1=false` to fine tune the backbone, with `STAGE2_STAGE1_LR` controlling its learning rate. To change the freeze setting on resume, pass `STAGE2_STAGE1_RESUME="--resume outputs/diffts/points_stage1_adapter/last.ckpt"` to the Stage 1 target.
 
 Outputs are `outputs/diffts/points/{best,last}.ckpt` and
 `outputs/diffts/points_stage1_adapter/{best,last}.ckpt`, with resolved configs
@@ -157,7 +177,7 @@ docker compose -f docker/docker-compose.yml run --rm train \
 Visualise the full denoising trajectory for held-out test plants, saving 12 evenly spaced frames:
 
 ```bash
-make visualize-stage2-test STAGE2_VIS_FRAMES=12
+make stage2-visualize-diffts-test STAGE2_VIS_FRAMES=12
 ```
 
 The Make target defaults to the `points` checkpoint and `top_down` test view; set `STAGE2_VIS_VARIANT=points_stage1` to use the new adapter checkpoint, or `STAGE2_VIS_VIEW=full` to change the view. The sampler runs the checkpoint's configured number of inference steps (normally 200). It saves exactly 12 frames per plant: `frame_001.png` is the first denoising result, `frame_012.png` is the final result, and the intervening frames are evenly spaced in sampler-step order. The images are under the selected variant output directory at `test_diffusion_frames/<view>/frames_012_steps_200/<plant_id>/`; `manifest.json` records each frame's actual step and diffusion timestep. Use `STAGE2_VIS_SAMPLE_STEPS` only when you intentionally want a shorter sampling trajectory. The previous `STAGE2_VIS_STEPS` Make variable remains an alias for the number of saved frames.

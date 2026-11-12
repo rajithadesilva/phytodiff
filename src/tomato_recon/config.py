@@ -18,6 +18,7 @@ STAGE_CONFIGS = {
     "sonata_ptv3": "encoder/sonata_ptv3.yaml",
     "kpconvx": "encoder/kpconvx.yaml",
     "diffusion": "diffusion/default.yaml",
+    "aggfm": "flow_matching/aggfm.yaml",
     "graph": "graph/default.yaml",
     "parametric": "parametric/default.yaml",
     "joint": "experiment/combined_stage1_K256.yaml",
@@ -95,6 +96,37 @@ def validate_config(cfg: DictConfig, stage: str | None = None) -> None:
             raise ValueError("DiffTS variant must be points or points_stage1")
         if int(cfg.model.diffusion.max_points) < 2:
             raise ValueError("DiffTS max_points must be at least two")
+    if stage == "aggfm":
+        settings = cfg.model.aggfm
+        if int(settings.architecture_version) != 1:
+            raise ValueError("unsupported AG-GFM architecture version")
+        if int(settings.observed_seeds) < 0 or int(settings.latent_seeds) < 0:
+            raise ValueError("AG-GFM seed counts must be nonnegative")
+        if not 1 <= int(settings.observed_seeds) + int(settings.latent_seeds) <= int(cfg.data.max_nodes):
+            raise ValueError("AG-GFM seed counts must sum to 1..data.max_nodes")
+        for key in ("hidden_dim", "heads", "blocks", "max_points", "memory_points", "graph_neighbors"):
+            if int(settings[key]) < 1:
+                raise ValueError(f"AG-GFM {key} must be positive")
+        if int(settings.hidden_dim) % int(settings.heads):
+            raise ValueError("AG-GFM hidden_dim must be divisible by heads")
+        if float(settings.xyz_scale_m) <= 0 or float(settings.existence_scale) <= 0:
+            raise ValueError("AG-GFM channel scales must be positive")
+        if not 0 <= float(settings.dropout) < 1 or float(settings.latent_noise_m) < 0 or float(settings.min_seed_distance_m) < 0:
+            raise ValueError("invalid AG-GFM dropout/noise")
+        if int(cfg.model.encoder.num_semantic_classes) != 5:
+            raise ValueError("AG-GFM anatomical mapping requires the five Stage 1 semantic classes")
+        if float(settings.active_logit) <= 0 or float(settings.inactive_logit) >= 0:
+            raise ValueError("AG-GFM active/inactive logits must be positive/negative")
+        if any(float(v) < 0 for v in settings.matching.values()) or any(float(v) < 0 for v in settings.loss.values()):
+            raise ValueError("AG-GFM matching/loss weights must be nonnegative")
+        if int(cfg.trainer.batch_size) < 1 or int(cfg.trainer.validation_interval) < 1:
+            raise ValueError("AG-GFM batch_size/validation_interval must be positive")
+        if cfg.trainer.validation_view is not None and cfg.trainer.validation_view not in cfg.data.pcl_types:
+            raise ValueError("validation_view must be among selected pcl_types")
+        if int(cfg.inference.flow_steps) < 1 or str(cfg.inference.solver) not in {"euler", "heun"}:
+            raise ValueError("AG-GFM requires positive flow_steps and euler/heun solver")
+        if not 0 < float(cfg.inference.existence_threshold) < 1 or int(cfg.inference.min_nodes) < 1:
+            raise ValueError("AG-GFM requires threshold in (0,1) and min_nodes >= 1")
     if float(cfg.model.encoder.skeleton_threshold_m) <= 0:
         raise ValueError("model.encoder.skeleton_threshold_m must be positive")
     if float(cfg.model.encoder.junction_threshold_multiplier) <= 0:

@@ -2,6 +2,13 @@
 
 Stage 1 uses dataclasses in `tomato_recon.data.schemas`. DiffTS Stage 2 has its own target-free input and variable-length output contract; disk formats remain versioned JSON/NPZ/PT structures.
 
+AG-GFM adds a separate `AGGFMInput` adapter and `Prediction` output. Its continuous
+state is `[slots,4]` (XYZ metres and an existence logit); its output exposes
+`node_xyz`, `parent_flow`, `parent_index`, `edges`, source slots and a validated
+`PlantGraph`. Checkpoints use `aggfm-stage2-v1` with architecture version 1 and
+embed the complete Stage 1 encoder including all prediction heads. No legacy
+DiffTS schema changes. See [AG-GFM contracts and configuration](AGGFM.md).
+
 ## `PlantSample`
 
 - Point tensors: `xyz/rgb/normals [N,3]`, `semantic/instance/point_valid [N]`.

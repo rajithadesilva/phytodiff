@@ -32,14 +32,22 @@ from tomato_recon.data.processed import (
 class TrainingProgress:
     """Compact interactive progress with log-friendly non-TTY output."""
 
-    def __init__(self, stage: str, epoch: int, epoch_total: int, batch_total: int) -> None:
+    def __init__(
+        self,
+        stage: str,
+        epoch: int,
+        epoch_total: int,
+        batch_total: int,
+        *,
+        log_interval: int | None = None,
+    ) -> None:
         self.stage = stage
         self.epoch = epoch
         self.epoch_total = max(epoch_total, epoch)
         self.batch_total = max(batch_total, 1)
         self.started = time.perf_counter()
         self.interactive = sys.stdout.isatty()
-        self.log_interval = max(1, self.batch_total // 10)
+        self.log_interval = max(1, self.batch_total // 10 if log_interval is None else log_interval)
         self.last_width = 0
 
     @staticmethod
@@ -56,12 +64,16 @@ class TrainingProgress:
             f"{name}={totals[name] / max(steps, 1):.4f}" for name in ordered
         )
 
-    def update(self, totals: dict[str, float], steps: int) -> None:
+    def update(
+        self, totals: dict[str, float], steps: int, *, sample_count: int | None = None
+    ) -> None:
+        """Report completed batches, averaging totals over samples when provided."""
         elapsed = time.perf_counter() - self.started
         eta = elapsed / max(steps, 1) * max(self.batch_total - steps, 0)
         message = (
             f"[{self.stage}] Epoch {self.epoch}/{self.epoch_total} | "
-            f"Batch {steps}/{self.batch_total} | {self._losses(totals, steps)} | "
+            f"Batch {steps}/{self.batch_total} | "
+            f"{self._losses(totals, steps if sample_count is None else sample_count)} | "
             f"ETA {self._duration(eta)}"
         )
         if self.interactive:

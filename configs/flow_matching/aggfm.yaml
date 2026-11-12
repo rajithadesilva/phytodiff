@@ -1,0 +1,55 @@
+stage: aggfm
+stage2_model: aggfm
+data:
+  dataset: combined
+  pcl_types: [full, top_down, side]
+model:
+  aggfm:
+    architecture_version: 1
+    max_points: 8192
+    observed_seeds: 192
+    latent_seeds: 64
+    latent_noise_m: 0.01
+    min_seed_distance_m: 0.001
+    hidden_dim: 192
+    blocks: 4
+    heads: 8
+    dropout: 0.1
+    memory_points: 512
+    graph_neighbors: 8
+    xyz_scale_m: 0.1
+    existence_scale: 6.0
+    active_logit: 3.0
+    inactive_logit: -3.0
+    anatomical_embedding: true
+    matching:
+      position: 1.0
+      semantic: 0.2
+      structure: 0.3
+      unmatched_cost: 4.0
+    loss:
+      flow: 1.0
+      exist: 0.2
+      parent: 0.2
+      role: 0.1
+      geom: 0.5
+      structure: 0.1
+      organ: 0.1
+inference:
+  flow_steps: 20
+  solver: heun
+  existence_threshold: 0.5
+  min_nodes: 1
+  max_edge_length_m: null
+trainer:
+  max_epochs: 200
+  learning_rate: 0.0001
+  stage1_learning_rate: 0.00001
+  freeze_stage1: true
+  batch_size: 1
+  gradient_clip: 1.0
+  validation_interval: 1
+  validation_view: null
+  early_stop_patience: 50
+output:
+  dir: outputs/aggfm/${data.dataset}
