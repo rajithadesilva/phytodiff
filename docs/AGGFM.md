@@ -268,7 +268,12 @@ visibility under a newly selected partial view.
 Pillow panels display the input cloud, observed/latent seeds, selected
 intermediate flow states coloured by existence, final active nodes/tree, and GT.
 GT is loaded only by evaluation/visualisation. The full trajectory is also saved
-as NPZ for later analysis.
+as NPZ for later analysis. Images, graphs, and trajectories are grouped into
+separate folders within each split, then by view, with the plant ID as the
+filename. `STAGE2_SELECTED_VIS_COUNT=0` renders every plant in the selected split
+and every selected view. Progress is printed immediately for checkpoint loading,
+each plant/view, every flow step, saved files, and sample completion with elapsed
+time and ETA; no extra verbosity flag is needed.
 
 ```text
 outputs/aggfm/<dataset>/<view_combination>/
@@ -282,10 +287,10 @@ outputs/aggfm/<dataset>/<view_combination>/
     skeleton.json
     skeleton.ply
     graph.json                  # existing PlantGraph schema
-  visualizations/<split>/<view>/<plant>/
-    flow.png
-    trajectory.npz
-    graph.json
+  visualizations/<split>/
+    images/<view>/<plant>.png
+    graphs/<view>/<plant>.json
+    trajectories/<view>/<plant>.npz
 ```
 
 ## DiffTS compatibility and limitations

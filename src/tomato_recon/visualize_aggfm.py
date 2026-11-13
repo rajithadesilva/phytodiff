@@ -1,8 +1,10 @@
 """Render seeds, flow states and trees against validation/test targets with Pillow."""
 
 import argparse
+from datetime import timedelta
 import json
 from pathlib import Path
+import time
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -71,27 +73,64 @@ def render(path, data, seeds, prediction, states, frames):
 
 def visualize(checkpoint, output, *, split="test", dataset=None, views=None, processed_root=None,
               steps=None, frames=5, count=1):
-    model, encoder, cfg, payload, device = load_runtime(checkpoint)
-    root, selection = processed_root or cfg.data.processed_root, dataset or cfg.data.dataset
-    check_evaluation_compatibility(dataset_compatibility(root, str(selection)), payload["dataset_compatibility"])
-    samples = PointCloudViewDataset(root, split=split, dataset=selection, pcl_types=tuple(views or cfg.data.pcl_types))
     if count < 0 or frames < 2:
         raise ValueError("count must be nonnegative and frames at least two")
+    started = time.perf_counter()
+    label = "[aggfm/visualize]"
+    print(f"{label} Loading checkpoint {checkpoint}", flush=True)
+    model, encoder, cfg, payload, device = load_runtime(checkpoint)
+    root, selection = processed_root or cfg.data.processed_root, dataset or cfg.data.dataset
+    flow_steps = int(cfg.inference.flow_steps if steps is None else steps)
+    if flow_steps < 1:
+        raise ValueError("flow steps must be positive")
+    print(f"{label} Checking dataset {selection} | split={split} | device={device}", flush=True)
+    check_evaluation_compatibility(dataset_compatibility(root, str(selection)), payload["dataset_compatibility"])
+    samples = PointCloudViewDataset(root, split=split, dataset=selection, pcl_types=tuple(views or cfg.data.pcl_types))
     if not len(samples):
         raise ValueError("selected visualization split/views contain no samples")
     selected_count = len(samples.full_dataset) if count == 0 else min(count, len(samples.full_dataset))
-    for index in range(selected_count * len(samples.pcl_types)):
+    total = selected_count * len(samples.pcl_types)
+    output = Path(output) / split
+    print(f"{label} Starting {selected_count} plants x {len(samples.pcl_types)} views = {total} samples | "
+          f"views={','.join(samples.pcl_types)} | steps={flow_steps} | frames={frames} | output={output}",
+          flush=True)
+    samples_started = time.perf_counter()
+    for index in range(total):
+        sample_started = time.perf_counter()
+        print(f"{label} Sample {index + 1}/{total} | Loading input", flush=True)
         data = sample_points(from_sample(samples[index]), int(cfg.model.aggfm.max_points), int(cfg.seed)).to(device)
+        sample_label = f"{label} Sample {index + 1}/{total} | {data.plant_id} | {data.dataset}/{data.view}"
+        print(f"{sample_label} | Conditioning on {len(data.xyz)} points", flush=True)
         states = []
+
+        def record_step(step, flow_time, state):
+            states.append((flow_time, state.cpu()))
+            print(f"{sample_label} | Flow step {step}/{flow_steps} | t={flow_time:.2f}", flush=True)
+
         prediction, seeds = predict(model, encoder, data.points_only(), cfg, steps=steps,
-                                     on_step=lambda i, t, z: states.append((t, z.cpu())))
-        folder = Path(output) / split / data.view / data.plant_id
-        folder.mkdir(parents=True, exist_ok=True)
-        render(folder / "flow.png", data, seeds, prediction, states, frames)
-        np.savez_compressed(folder / "trajectory.npz", times=[t for t, _ in states],
+                                     on_step=record_step)
+        image_path = output / "images" / data.view / f"{data.plant_id}.png"
+        graph_path = output / "graphs" / data.view / f"{data.plant_id}.json"
+        trajectory_path = output / "trajectories" / data.view / f"{data.plant_id}.npz"
+        for path in (image_path, graph_path, trajectory_path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"{sample_label} | Rendering {len(prediction.node_xyz)} active nodes", flush=True)
+        render(image_path, data, seeds, prediction, states, frames)
+        print(f"{sample_label} | Saved image {image_path}", flush=True)
+        np.savez_compressed(trajectory_path, times=[t for t, _ in states],
                              states=np.stack([z.numpy() for _, z in states]),
                              observed=seeds.observed.cpu().numpy(), active_slots=prediction.source_slots.cpu().numpy())
-        (folder / "graph.json").write_text(json.dumps(prediction.graph.to_dict(), indent=2) + "\n")
+        print(f"{sample_label} | Saved trajectory {trajectory_path}", flush=True)
+        graph_path.write_text(json.dumps(prediction.graph.to_dict(), indent=2) + "\n")
+        print(f"{sample_label} | Saved graph {graph_path}", flush=True)
+        now = time.perf_counter()
+        completed = index + 1
+        eta = (now - samples_started) / completed * (total - completed)
+        print(f"{sample_label} | Complete {completed}/{total} ({completed / total:.1%}) | "
+              f"sample={now - sample_started:.1f}s | elapsed {timedelta(seconds=int(now - started))} | "
+              f"ETA {timedelta(seconds=int(eta))}", flush=True)
+    print(f"{label} Complete | {total} images, {total} graphs, {total} trajectories | "
+          f"elapsed {timedelta(seconds=int(time.perf_counter() - started))} | output={output}", flush=True)
 
 
 def main(argv=None):

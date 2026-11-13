@@ -240,7 +240,11 @@ Use the actual processed plant path for inference. Supply the training dataset
 and view selection to resolve other checkpoints, or set `STAGE2_CHECKPOINT`
 explicitly. Standalone inference reads point inputs and metadata without opening
 ground-truth targets. Validation/test visualisations can display targets for
-comparison.
+comparison. AG-GFM saves images, graphs, and trajectories separately under
+`visualizations/<split>/{images,graphs,trajectories}/<view>/`, using plant IDs as
+filenames. It prints progress for each plant/view and flow step, including saved
+paths, elapsed time, and ETA. Set `STAGE2_SELECTED_VIS_COUNT=0` to render every
+plant in the selected split.
 
 The existing DiffTS visualisation command remains available:
 

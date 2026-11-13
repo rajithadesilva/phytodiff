@@ -1,13 +1,19 @@
+from contextlib import redirect_stdout
+import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
 
+import numpy as np
 from omegaconf import OmegaConf
+from PIL import Image
 import torch
 
 from tests.fixtures.aggfm import save_stage1, tiny_config, write_dataset
 from tomato_recon.data.aggfm import from_sample
 from tomato_recon.data.processed import make_tiny_sample, processed_dataset_compatibility
+from tomato_recon.data.schemas import PlantGraph
 from tomato_recon.evaluate_aggfm import evaluate
 from tomato_recon.infer_aggfm import run
 from tomato_recon.models.encoders.base import PointEncoder
@@ -27,7 +33,7 @@ class AGGFMIntegrationTests(unittest.TestCase):
                 root = Path(tmp)
                 data_root = root / "data"
                 write_dataset(data_root)
-                cfg = tiny_config("data.dataset=tomatowur", "data.pcl_types=[top_down]",
+                cfg = tiny_config("data.dataset=combined", "data.pcl_types=[top_down]",
                                   "trainer.fast_dev_run=true", "trainer.devices=0")
                 cfg.data.processed_root = str(data_root)
                 cfg.output.dir = str(root / "run")
@@ -51,8 +57,44 @@ class AGGFMIntegrationTests(unittest.TestCase):
                 result = run(last, data_root / "plant_000003/side.npz", root / "prediction", view="side", steps=1)
                 self.assertGreaterEqual(result["predicted_count"], 1)
                 self.assertTrue((root / "prediction/graph.json").is_file())
-                visualize(last, root / "viz", views=["side"], steps=2, frames=3, count=1)
-                self.assertTrue(list((root / "viz").rglob("flow.png")))
+                progress = io.StringIO()
+                with redirect_stdout(progress):
+                    visualize(last, root / "viz", views=["full", "side"], steps=2, frames=3, count=0)
+                expected_files = set()
+                for plant in ("plant_000003", "plant_000006", "plant_000009"):
+                    for view in ("full", "side"):
+                        folder = root / "viz/test"
+                        image_path = folder / "images" / view / f"{plant}.png"
+                        graph_path = folder / "graphs" / view / f"{plant}.json"
+                        trajectory_path = folder / "trajectories" / view / f"{plant}.npz"
+                        expected_files.update((image_path, graph_path, trajectory_path))
+                        with Image.open(image_path) as image:
+                            image.verify()
+                        graph = PlantGraph.from_dict(json.loads(graph_path.read_text()))
+                        self.assertEqual(graph.plant_id, plant)
+                        self.assertEqual(graph.source["view"], view)
+                        with np.load(trajectory_path) as trajectory:
+                            np.testing.assert_allclose(trajectory["times"], [0., 0.5, 1.])
+                            self.assertEqual(trajectory["states"].shape, (3, 16, 4))
+                            self.assertTrue(np.isfinite(trajectory["states"]).all())
+                self.assertEqual({p for p in (root / "viz").rglob("*") if p.is_file()}, expected_files)
+                log = progress.getvalue()
+                self.assertIn("Loading checkpoint", log)
+                self.assertIn("3 plants x 2 views = 6 samples", log)
+                self.assertIn("Sample 6/6 | plant_000009 | pheno4d/side", log)
+                self.assertEqual(log.count("Flow step 0/2"), 6)
+                self.assertEqual(log.count("Flow step 2/2"), 6)
+                self.assertIn("Saved image", log)
+                self.assertIn("Saved graph", log)
+                self.assertIn("Saved trajectory", log)
+                self.assertIn("Complete 6/6 (100.0%)", log)
+                self.assertIn("ETA 0:00:00", log)
+                self.assertIn("Complete | 6 images, 6 graphs, 6 trajectories", log)
+                # A limited validation preview has separate paths and uses saved flow steps.
+                with redirect_stdout(io.StringIO()):
+                    visualize(last, root / "viz", split="val", views=["side"], frames=3, count=1)
+                self.assertEqual(list((root / "viz/val/images/side").iterdir()),
+                                 [root / "viz/val/images/side/plant_000002.png"])
         finally:
             torch.set_num_threads(previous_threads)
 

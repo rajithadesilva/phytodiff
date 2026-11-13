@@ -119,7 +119,8 @@ def main(argv=None):
             print(f"[aggfm/val] Epoch {epoch + 1}/{epochs} | Validating {validation_count} samples "
                   f"(view={validation_view(cfg)})", flush=True)
             validation = evaluate_dataset(model, encoder, cfg, val,
-                                           max_samples=1 if cfg.trainer.fast_dev_run else None)
+                                           max_samples=1 if cfg.trainer.fast_dev_run else None,
+                                           progress_label=f"[aggfm/val] Epoch {epoch + 1}/{epochs}")
             score = validation["overall"]["skeleton_chamfer_m"]
             scheduler.step(score)
             improved = score < best

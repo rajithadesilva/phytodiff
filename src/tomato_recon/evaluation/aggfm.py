@@ -1,6 +1,7 @@
 """Geometry and topology metrics under one-to-one spatial node matching."""
 
 from collections import Counter, defaultdict
+from datetime import timedelta
 import time
 
 import torch
@@ -84,13 +85,30 @@ def aggregate(rows):
     return {key: sum(values) / len(values) for key, values in totals.items()}
 
 
+def _print_sample_progress(label, completed, total, started, previous_width=0):
+    elapsed = time.perf_counter() - started
+    eta = timedelta(seconds=int(elapsed / completed * (total - completed))) if completed else "--:--:--"
+    message = (f"{label} | Samples {completed}/{total} ({completed / total:.1%}) | "
+               f"elapsed {timedelta(seconds=int(elapsed))} | ETA {eta}")
+    padding = " " * max(previous_width - len(message), 0)
+    print(f"\r{message}{padding}", end="\n" if completed == total else "", flush=True)
+    return len(message)
+
+
 @torch.no_grad()
-def evaluate_dataset(model, encoder, cfg, dataset, *, steps=None, max_samples=None):
+def evaluate_dataset(model, encoder, cfg, dataset, *, steps=None, max_samples=None,
+                     progress_label=None):
     rows = []
     device = next(model.parameters()).device
-    for index in range(len(dataset)):
-        if max_samples is not None and index >= max_samples:
-            break
+    sample_total = len(dataset) if max_samples is None else min(len(dataset), max_samples)
+    if sample_total <= 0:
+        raise ValueError("selected evaluation split/views contain no samples")
+    evaluation_started = time.perf_counter()
+    progress_width = 0
+    if progress_label is not None:
+        progress_width = _print_sample_progress(
+            progress_label, 0, sample_total, evaluation_started, progress_width)
+    for index in range(sample_total):
         data = sample_points(from_sample(dataset[index]), int(cfg.model.aggfm.max_points),
                              int(cfg.seed) + index).to(device)
         if device.type == "cuda":
@@ -103,8 +121,9 @@ def evaluate_dataset(model, encoder, cfg, dataset, *, steps=None, max_samples=No
         row = {"plant_id": data.plant_id, "dataset": data.dataset, "view": data.view,
                **metrics(prediction, data), "inference_seconds": runtime}
         rows.append(row)
-    if not rows:
-        raise ValueError("selected evaluation split/views contain no samples")
+        if progress_label is not None:
+            progress_width = _print_sample_progress(
+                progress_label, len(rows), sample_total, evaluation_started, progress_width)
     groups = defaultdict(list)
     for row in rows:
         groups[f'{row["dataset"]}/{row["view"]}'].append(row)
